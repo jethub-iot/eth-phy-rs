@@ -13,6 +13,7 @@
 
 #![no_std]
 
+pub mod ieee802_3;
 mod mdio;
 mod phy;
 mod types;
