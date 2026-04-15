@@ -17,7 +17,6 @@
 
 #![no_std]
 
-#[allow(dead_code)]
 mod regs;
 
 use eth_mdio_phy::ieee802_3;
@@ -133,8 +132,9 @@ impl<P: embedded_hal::digital::OutputPin> PhyLan87xxWithReset<P> {
 
     /// Perform a hardware reset via the nRST pin.
     ///
-    /// Drives the pin low for at least 2 ms, then releases it and waits
-    /// 200 us for the PHY to become ready (per LAN8720A datasheet).
+    /// Drives the pin low for 2 ms (min 100 us per datasheet), then
+    /// releases and waits 25 ms for PHY internal init to complete
+    /// before MDIO is accessible (LAN8720A datasheet Table 4-2).
     pub fn hardware_reset<D: embedded_hal::delay::DelayNs>(
         &mut self,
         delay: &mut D,
@@ -142,7 +142,7 @@ impl<P: embedded_hal::digital::OutputPin> PhyLan87xxWithReset<P> {
         self.reset_pin.set_low()?;
         delay.delay_ms(2);
         self.reset_pin.set_high()?;
-        delay.delay_us(200);
+        delay.delay_ms(25);
         Ok(())
     }
 }
@@ -228,7 +228,10 @@ mod tests {
                 return Err(MockError);
             }
             self.call_count += 1;
-            let val = self.reads[self.read_idx];
+            let val = *self
+                .reads
+                .get(self.read_idx)
+                .expect("MockMdio: reads vector exhausted — test needs more entries");
             self.read_idx += 1;
             Ok(val)
         }
@@ -297,8 +300,9 @@ mod tests {
 
     #[test]
     fn init_reset_timeout() {
-        // soft_reset: all 500 reads return RESET set → returns false → ResetTimeout
-        let mut mdio = MockMdio::new(vec![bmcr::RESET; 500]);
+        // soft_reset: all reads return RESET set → returns false → ResetTimeout
+        // Buffer larger than max_attempts (500) to avoid brittle coupling
+        let mut mdio = MockMdio::new(vec![bmcr::RESET; 1000]);
         let mut phy = PhyLan87xx::new(1);
         let err = phy.init(&mut mdio).unwrap_err();
         match err {

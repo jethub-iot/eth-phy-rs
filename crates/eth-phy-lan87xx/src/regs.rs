@@ -23,6 +23,8 @@ pub mod mcsr {
     /// Energy Detect Power-Down enable.
     pub const EDPD_EN: u16 = 1 << 14;
     /// Energy-on detected (read-only status bit).
+    /// Used in tests to verify bit preservation during EDPD disable.
+    #[cfg(test)]
     pub const ENERGYON: u16 = 1 << 1;
 }
 
@@ -31,6 +33,8 @@ pub mod pscsr {
     /// Register address.
     pub const ADDR: u8 = 31;
     /// Auto-negotiation done indicator.
+    /// Used in tests to verify parse_pscsr ignores non-speed bits.
+    #[cfg(test)]
     pub const AUTODONE: u16 = 1 << 12;
     /// Mask for the speed/duplex indication field (bits [4:2]).
     pub const SPEED_DUPLEX_MASK: u16 = 0b111 << 2;
@@ -45,6 +49,8 @@ pub mod pscsr {
 }
 
 /// Interrupt Source Register (vendor register 29).
+/// Not used by the current driver; provided for completeness.
+#[allow(dead_code)]
 pub mod isr {
     /// Register address.
     pub const ADDR: u8 = 29;
@@ -67,6 +73,8 @@ pub mod isr {
 /// Interrupt Mask Register (vendor register 30).
 ///
 /// Bit layout mirrors [`isr`]; writing a 1 enables the corresponding interrupt.
+/// Not used by the current driver; provided for completeness.
+#[allow(dead_code)]
 pub mod imr {
     /// Register address.
     pub const ADDR: u8 = 30;
