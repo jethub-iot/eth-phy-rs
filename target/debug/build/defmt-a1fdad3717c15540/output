@@ -1,0 +1,3 @@
+cargo:rustc-link-search=/Volumes/Devel/jTESTING/testsuite-firmware/crates/eth-phy/target/debug/build/defmt-a1fdad3717c15540/out
+cargo:rustc-check-cfg=cfg(c_variadic)
+cargo:rustc-check-cfg=cfg(no_cas)

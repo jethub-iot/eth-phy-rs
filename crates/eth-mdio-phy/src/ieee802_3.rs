@@ -107,21 +107,25 @@ pub mod anlpar {
 /// Perform a software reset on the PHY.
 ///
 /// Writes the RESET bit in BMCR and polls up to `max_attempts` times
-/// until the bit self-clears. Returns `Ok(())` even if the bit does not
-/// clear within the allowed attempts (caller should check if needed).
+/// until the bit self-clears.
+///
+/// Returns `Ok(true)` if reset completed (bit cleared),
+/// `Ok(false)` if `max_attempts` exhausted (bit still set).
+/// The caller decides whether to treat a timeout as an error
+/// (e.g., return `PhyError::ResetTimeout`).
 pub fn soft_reset<M: MdioBus>(
     mdio: &mut M,
     phy_addr: u8,
     max_attempts: u32,
-) -> Result<(), M::Error> {
+) -> Result<bool, M::Error> {
     mdio.write(phy_addr, regs::BMCR, bmcr::RESET)?;
     for _ in 0..max_attempts {
         let val = mdio.read(phy_addr, regs::BMCR)?;
         if val & bmcr::RESET == 0 {
-            return Ok(());
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Check whether the PHY link is up.
@@ -321,7 +325,7 @@ mod tests {
         // First read after write returns 0 (RESET already cleared)
         let mut mdio = MockMdio::new(vec![0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
         // One write (RESET) + one read (poll)
         assert_eq!(mdio.writes.len(), 1);
         assert_eq!(mdio.writes[0], (1, regs::BMCR, bmcr::RESET));
@@ -333,16 +337,16 @@ mod tests {
         // RESET bit set for 3 reads, then cleared on 4th
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET, 0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
         assert_eq!(mdio.read_idx, 4);
     }
 
     #[test]
     fn soft_reset_exhausts_attempts() {
-        // RESET bit never clears — 3 attempts, all return RESET set
+        // RESET bit never clears — 3 attempts, returns false (timeout)
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET]);
         let result = soft_reset(&mut mdio, 1, 3);
-        assert!(result.is_ok()); // Still Ok per spec
+        assert_eq!(result.unwrap(), false); // timeout indicated, not error
         assert_eq!(mdio.read_idx, 3);
     }
 
@@ -352,6 +356,13 @@ mod tests {
         let mut mdio = MockMdio::with_failure(vec![], 0);
         let result = soft_reset(&mut mdio, 1, 10);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn soft_reset_read_error_during_poll() {
+        // Write succeeds, first poll read fails
+        let mut mdio = MockMdio::with_failure(vec![], 1);
+        assert!(soft_reset(&mut mdio, 1, 10).is_err());
     }
 
     // ── is_link_up tests ───────────────────────────────────────────────
@@ -410,6 +421,12 @@ mod tests {
     #[test]
     fn read_phy_id_error_on_first_read() {
         let mut mdio = MockMdio::with_failure(vec![], 0);
+        assert!(read_phy_id(&mut mdio, 1).is_err());
+    }
+
+    #[test]
+    fn read_phy_id_error_on_second_read() {
+        let mut mdio = MockMdio::with_failure(vec![0x0007], 1);
         assert!(read_phy_id(&mut mdio, 1).is_err());
     }
 
