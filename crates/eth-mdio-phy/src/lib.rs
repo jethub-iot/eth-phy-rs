@@ -14,7 +14,9 @@
 #![no_std]
 
 mod mdio;
+mod phy;
 mod types;
 
 pub use mdio::MdioBus;
+pub use phy::{PhyDriver, PhyError};
 pub use types::{Duplex, LinkStatus, PhyCapabilities, Speed};
