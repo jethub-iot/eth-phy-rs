@@ -13,6 +13,8 @@
 
 #![no_std]
 
+mod mdio;
 mod types;
 
+pub use mdio::MdioBus;
 pub use types::{Duplex, LinkStatus, PhyCapabilities, Speed};
