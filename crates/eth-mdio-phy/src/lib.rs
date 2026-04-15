@@ -12,3 +12,7 @@
 //! Platform-independent. Works with any MAC that provides [`MdioBus`].
 
 #![no_std]
+
+mod types;
+
+pub use types::{Duplex, LinkStatus, PhyCapabilities, Speed};
