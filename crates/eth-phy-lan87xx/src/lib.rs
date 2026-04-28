@@ -76,7 +76,23 @@ impl PhyDriver for PhyLan87xx {
         mdio.write(self.addr, regs::mcsr::ADDR, mcsr & !regs::mcsr::EDPD_EN)
             .map_err(PhyError::Mdio)?;
 
-        // 4. Enable auto-negotiation
+        // 4. Advertise standard 10/100 capabilities.
+        //
+        // На cold-boot soft-reset (BMCR.RESET через MDIO) НЕ всегда
+        // возвращает ANAR к документированному default 0x01E1 — регистр
+        // может содержать остатки power-up state. Без явной записи
+        // ANAR auto-negotiation срабатывает с урезанным advertisement,
+        // partner negotiates 100/Full, link приходит — но unicast RX на
+        // PHY-уровне мёртв. Ставим стандартный 10/100 selector явно.
+        let anar = ieee802_3::anar::TX_FD
+            | ieee802_3::anar::TX_HD
+            | ieee802_3::anar::T10_FD
+            | ieee802_3::anar::T10_HD
+            | ieee802_3::anar::SELECTOR_IEEE802_3;
+        mdio.write(self.addr, ieee802_3::regs::ANAR, anar)
+            .map_err(PhyError::Mdio)?;
+
+        // 5. Enable auto-negotiation
         ieee802_3::enable_auto_negotiation(mdio, self.addr).map_err(PhyError::Mdio)?;
 
         self.link_up = false;
@@ -309,6 +325,36 @@ mod tests {
             PhyError::ResetTimeout => {}
             _ => panic!("expected ResetTimeout, got {:?}", err),
         }
+    }
+
+    #[test]
+    fn init_writes_anar_standard_advertisement() {
+        // Phase 3.0 fix: cold-boot soft-reset не всегда возвращает ANAR к default.
+        // init должен писать стандартное 10/100 advertisement явно.
+        let mut mdio = MockMdio::new(vec![
+            0x0000,              // soft_reset poll
+            0x0007,              // PHYIDR1
+            0xC0F0,              // PHYIDR2
+            regs::mcsr::EDPD_EN, // MCSR
+            0x0000,              // BMCR for enable_auto_negotiation
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.init(&mut mdio).unwrap();
+
+        let anar_write = mdio
+            .writes
+            .iter()
+            .find(|&&(_, reg, _)| reg == eth_mdio_phy::ieee802_3::regs::ANAR)
+            .expect("expected a write to ANAR");
+        let expected = eth_mdio_phy::ieee802_3::anar::TX_FD
+            | eth_mdio_phy::ieee802_3::anar::TX_HD
+            | eth_mdio_phy::ieee802_3::anar::T10_FD
+            | eth_mdio_phy::ieee802_3::anar::T10_HD
+            | eth_mdio_phy::ieee802_3::anar::SELECTOR_IEEE802_3;
+        assert_eq!(
+            anar_write.2, expected,
+            "ANAR must advertise standard 10/100 full+half + 802.3 selector"
+        );
     }
 
     #[test]
