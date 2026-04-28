@@ -78,12 +78,13 @@ impl PhyDriver for PhyLan87xx {
 
         // 4. Advertise standard 10/100 capabilities.
         //
-        // На cold-boot soft-reset (BMCR.RESET через MDIO) НЕ всегда
-        // возвращает ANAR к документированному default 0x01E1 — регистр
-        // может содержать остатки power-up state. Без явной записи
-        // ANAR auto-negotiation срабатывает с урезанным advertisement,
-        // partner negotiates 100/Full, link приходит — но unicast RX на
-        // PHY-уровне мёртв. Ставим стандартный 10/100 selector явно.
+        // After a cold-boot, a soft-reset via BMCR.RESET does not always
+        // restore ANAR to its documented default of 0x01E1 — the register
+        // can hold residual power-up state. Without an explicit write,
+        // auto-negotiation starts with a truncated advertisement; the
+        // partner negotiates 100/Full and link comes up, but unicast RX
+        // is dead at the PHY layer. Write the standard 10/100 selector
+        // explicitly to avoid that.
         let anar = ieee802_3::anar::TX_FD
             | ieee802_3::anar::TX_HD
             | ieee802_3::anar::T10_FD
@@ -329,8 +330,9 @@ mod tests {
 
     #[test]
     fn init_writes_anar_standard_advertisement() {
-        // Phase 3.0 fix: cold-boot soft-reset не всегда возвращает ANAR к default.
-        // init должен писать стандартное 10/100 advertisement явно.
+        // Cold-boot soft-reset does not always restore ANAR to its
+        // default value, so init must write the standard 10/100
+        // advertisement explicitly.
         let mut mdio = MockMdio::new(vec![
             0x0000,              // soft_reset poll
             0x0007,              // PHYIDR1
