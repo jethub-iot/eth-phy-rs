@@ -111,19 +111,48 @@ impl PhyDriver for PhyLan87xx {
             self.link_up = false;
             return Ok(None);
         }
-        let pscsr = mdio
-            .read(self.addr, regs::pscsr::ADDR)
+
+        // Auto-negotiation vs. forced link is decided by BMCR.AN_ENABLE.
+        // The two paths have different validity rules and use different
+        // registers to read back speed/duplex.
+        let bmcr = mdio
+            .read(self.addr, ieee802_3::regs::BMCR)
             .map_err(PhyError::Mdio)?;
-        // PSCSR speed/duplex bits are only valid after AUTODONE is set.
-        // On parallel-detection links BMSR.LINK_STATUS can latch high
-        // while auto-negotiation is still converging, and reading PSCSR
-        // in that window returns indeterminate speed bits — exactly the
-        // class of bug the explicit ANAR write is meant to prevent.
-        if pscsr & regs::pscsr::AUTODONE == 0 {
-            self.link_up = false;
-            return Ok(None);
-        }
-        let status = Self::parse_pscsr(pscsr);
+
+        let status = if bmcr & ieee802_3::bmcr::AN_ENABLE != 0 {
+            // Auto-neg path: PSCSR speed/duplex bits are only valid
+            // after AUTODONE is set. On parallel-detection links
+            // BMSR.LINK_STATUS can latch high while auto-negotiation
+            // is still converging, and reading PSCSR in that window
+            // returns indeterminate speed bits — exactly the class of
+            // bug the explicit ANAR write is meant to prevent.
+            let pscsr = mdio
+                .read(self.addr, regs::pscsr::ADDR)
+                .map_err(PhyError::Mdio)?;
+            if pscsr & regs::pscsr::AUTODONE == 0 {
+                self.link_up = false;
+                return Ok(None);
+            }
+            Self::parse_pscsr(pscsr)
+        } else {
+            // Forced-link path (`ieee802_3::force_link` clears
+            // AN_ENABLE and programs SPEED_100 / DUPLEX_FULL directly
+            // in BMCR). PSCSR may never set AUTODONE in this mode, so
+            // read speed/duplex straight from BMCR. Link is reported
+            // as soon as BMSR.LINK_STATUS goes up.
+            let speed = if bmcr & ieee802_3::bmcr::SPEED_100 != 0 {
+                Speed::Mbps100
+            } else {
+                Speed::Mbps10
+            };
+            let duplex = if bmcr & ieee802_3::bmcr::DUPLEX_FULL != 0 {
+                Duplex::Full
+            } else {
+                Duplex::Half
+            };
+            Some(LinkStatus::new(speed, duplex))
+        };
+
         self.link_up = status.is_some();
         Ok(status)
     }
@@ -471,6 +500,7 @@ mod tests {
     fn poll_link_100_full() {
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,                                 // is_link_up → true
+            ieee802_3::bmcr::AN_ENABLE,                        // BMCR — auto-neg path
             regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_FD, // PSCSR → 100 Mbps full duplex
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -483,6 +513,7 @@ mod tests {
     fn poll_link_10_half() {
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
             regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_HD,
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -494,6 +525,7 @@ mod tests {
     fn poll_link_100_half() {
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
             regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_HD,
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -505,6 +537,7 @@ mod tests {
     fn poll_link_10_full() {
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
             regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_FD,
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -517,6 +550,7 @@ mod tests {
         // PSCSR with 0b000 in speed/duplex field → unrecognised
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
             regs::pscsr::AUTODONE, // AUTODONE set, speed bits = 0b000
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -533,6 +567,7 @@ mod tests {
         // yet" so the caller keeps polling instead of acting on garbage.
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
             regs::pscsr::SPEED_100_FD, // valid-looking, but AUTODONE not set
         ]);
         let mut phy = PhyLan87xx::new(1);
@@ -542,6 +577,44 @@ mod tests {
             "must wait for AUTODONE before decoding speed"
         );
         assert!(!phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_forced_100_full() {
+        // ieee802_3::force_link clears AN_ENABLE and writes
+        // SPEED_100 | DUPLEX_FULL into BMCR. AUTODONE may never set
+        // in this mode, so poll_link must decode straight from BMCR.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::SPEED_100 | ieee802_3::bmcr::DUPLEX_FULL,
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Full)));
+        assert!(phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_forced_10_half() {
+        // forced 10HD: AN_ENABLE/SPEED_100/DUPLEX_FULL all clear.
+        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, 0x0000]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+    }
+
+    #[test]
+    fn poll_link_forced_skips_pscsr_read() {
+        // In forced-link mode poll_link must NOT read PSCSR — providing
+        // only two read responses (BMSR + BMCR) would panic in the
+        // mock if a third read happened.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::SPEED_100, // SPEED_100, DUPLEX clear → 100/Half
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
     }
 
     #[test]
