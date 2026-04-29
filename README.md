@@ -31,22 +31,36 @@ The trait set is deliberately small:
 ```rust no_run
 pub trait MdioBus {
     type Error;
-    fn read(&mut self, phy_addr: u8, reg: u8) -> Result<u16, Self::Error>;
-    fn write(&mut self, phy_addr: u8, reg: u8, value: u16)
+    fn read(&mut self, phy_addr: u8, reg_addr: u8) -> Result<u16, Self::Error>;
+    fn write(&mut self, phy_addr: u8, reg_addr: u8, value: u16)
         -> Result<(), Self::Error>;
 }
 
 pub trait PhyDriver {
-    type Bus: MdioBus;
-    fn init(&mut self, bus: &mut Self::Bus) -> Result<(), PhyError<...>>;
-    fn poll_link(&mut self, bus: &mut Self::Bus)
-        -> Result<Option<LinkStatus>, PhyError<...>>;
-    fn capabilities(&self) -> PhyCapabilities;
+    fn phy_addr(&self) -> u8;
+    fn phy_id<M: MdioBus>(&self, mdio: &mut M)
+        -> Result<u32, PhyError<M::Error>>;
+    fn init<M: MdioBus>(&mut self, mdio: &mut M)
+        -> Result<(), PhyError<M::Error>>;
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M)
+        -> Result<Option<LinkStatus>, PhyError<M::Error>>;
+    fn capabilities<M: MdioBus>(&self, mdio: &mut M)
+        -> Result<PhyCapabilities, PhyError<M::Error>>;
 }
 ```
 
 That's enough to bring a typical RMII PHY up: probe the chip ID,
 soft-reset, programme `ANAR`, kick auto-neg, then poll for link.
+Each `PhyDriver` method takes the bus generically (`<M: MdioBus>`)
+rather than via an associated type, so the same driver instance can
+be reused with different bus implementations across a session
+(MAC bring-up vs. diagnostic mock vs. logging passthrough).
+
+The trade-off: `PhyDriver` is **not** object-safe — `dyn PhyDriver`
+is a compile error because of those generic methods. If you need
+polymorphic storage (a switch driver, a multi-PHY watchdog) keep the
+PHY drivers as concrete types behind an `enum`, or write a thin
+object-safe wrapper that fixes a single `MdioBus` implementation.
 
 ## Quick start
 
@@ -56,9 +70,10 @@ on an ESP32 + LAN8720A board (PHY on MDIO addr 1):
 ```rust no_run
 use esp_emac::mdio::EspMdio;
 use eth_phy_lan87xx::PhyLan87xx;
-use eth_mdio_phy::PhyDriver;
+use eth_mdio_phy::{MdioBus, PhyDriver};
 
-# fn example<E>() -> Result<(), eth_mdio_phy::PhyError<E>> {
+# fn example<E>() -> Result<(), eth_mdio_phy::PhyError<E>>
+# where EspMdio: MdioBus<Error = E> {
 let mut mdio = EspMdio::new();
 let mut phy = PhyLan87xx::new(1);
 

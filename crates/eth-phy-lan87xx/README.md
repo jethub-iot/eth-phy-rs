@@ -42,17 +42,30 @@ loop {
 # }
 ```
 
+## Bypassing auto-negotiation
+
+Auto-neg covers the common case. If a board needs forced link (e.g.
+a fixed-speed back-to-back connection) call
+[`eth_mdio_phy::ieee802_3::force_link`](../eth-mdio-phy/) directly
+with the chosen `Speed` / `Duplex` after `PhyLan87xx::init` returns —
+that helper clears `AN_ENABLE` and sets the `SPEED_100` / `DUPLEX_FULL`
+bits in BMCR for you.
+
 ## What `init` does
 
-1. Reads `PHYIDR1/2` and rejects anything that doesn't decode to a
-   known LAN87xx OUI / model.
-2. Issues `BMCR.RESET` (soft reset) and waits for the bit to
+1. Issues `BMCR.RESET` (soft reset) and waits for the bit to
    self-clear.
-3. **Writes `ANAR = 0x01E1`** explicitly — both the
+2. Reads `PHYIDR1/2` and rejects anything that doesn't decode to a
+   known LAN87xx OUI / model.
+3. Disables Energy-Detect Power-Down by clearing `MCSR.EDPD_EN`.
+   With EDPD on, the LAN87xx silently drops 10 Mbps frames during
+   the wake-up window after auto-neg — turning it off keeps the RX
+   path active at all times.
+4. **Writes `ANAR = 0x01E1`** explicitly — both the
    10BASE-T / 10BASE-T-FD / 100BASE-TX / 100BASE-TX-FD ability bits
    and the IEEE 802.3 selector field. This step is crucial; see the
    gotcha below.
-4. Sets `BMCR.AN_ENABLE | BMCR.AN_RESTART` to kick auto-negotiation.
+5. Sets `BMCR.AN_ENABLE | BMCR.AN_RESTART` to kick auto-negotiation.
 
 ## What `poll_link` does
 

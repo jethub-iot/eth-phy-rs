@@ -29,6 +29,18 @@ impl<E> From<E> for PhyError<E> {
 }
 
 /// Ethernet PHY driver — one implementation per chip family.
+///
+/// Every method except [`phy_addr`](Self::phy_addr) takes the bus
+/// generically (`<M: MdioBus>`) so a single driver instance can talk
+/// to different concrete buses across a session — useful for unit
+/// tests against a mock bus and for diagnostic passthroughs.
+///
+/// **Object-safety.** Because of those generic methods the trait is
+/// **not** object-safe — `dyn PhyDriver` is a compile error. If you
+/// need polymorphic storage of multiple PHYs (a switch driver, a
+/// link-state watchdog) keep them as concrete types behind an enum,
+/// or write your own object-safe wrapper that fixes a single
+/// `MdioBus` impl.
 pub trait PhyDriver {
     /// PHY address on the MDIO bus (0-31).
     fn phy_addr(&self) -> u8;

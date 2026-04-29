@@ -17,36 +17,58 @@ they talk to. `#![no_std]`, no allocations, no platform dependency.
   trait instead of a specific chip.
 * **`ieee802_3`** — Clause 22 standard register addresses (`BMCR`,
   `BMSR`, `ANAR`, `ANLPAR`, `PHYIDR1/2`) and the bit constants
-  inside them, plus convenience helpers like `is_link_up`,
-  `negotiated_speed_from_anlpar`. Reuse these in any chip-specific
-  driver instead of re-deriving the bit numbers.
+  inside them, plus convenience helpers `soft_reset`,
+  `enable_auto_negotiation`, `is_link_up`, `read_phy_id`,
+  `read_capabilities`, `force_link`. Reuse these in any
+  chip-specific driver instead of re-deriving the bit numbers.
 * **Shared types** — `Speed { Mbps10, Mbps100 }`,
   `Duplex { Half, Full }`, `LinkStatus { speed, duplex }`,
   `PhyCapabilities` (chip identification + advertised abilities).
 
 ## Usage
 
-A PHY driver is just a `struct + impl PhyDriver`:
+A PHY driver is just a `struct + impl PhyDriver`. Each method takes
+the bus generically — there is no associated `Bus` type, so the same
+driver instance can talk to a real `EspMdio` and a `MockMdioBus`
+within one session.
 
 ```rust no_run
-use eth_mdio_phy::{MdioBus, PhyDriver, PhyError, LinkStatus};
+use eth_mdio_phy::{
+    ieee802_3, LinkStatus, MdioBus, PhyCapabilities, PhyDriver, PhyError,
+};
 
 pub struct MyPhy { addr: u8 }
 
-impl<B: MdioBus> PhyDriver for MyPhy {
-    type Bus = B;
-    fn init(&mut self, bus: &mut B) -> Result<(), PhyError<B::Error>> {
-        // soft reset, set ANAR, kick auto-neg, ...
+impl PhyDriver for MyPhy {
+    fn phy_addr(&self) -> u8 {
+        self.addr
+    }
+
+    fn phy_id<M: MdioBus>(&self, mdio: &mut M)
+        -> Result<u32, PhyError<M::Error>>
+    {
+        ieee802_3::read_phy_id(mdio, self.addr).map_err(PhyError::Mdio)
+    }
+
+    fn init<M: MdioBus>(&mut self, mdio: &mut M)
+        -> Result<(), PhyError<M::Error>>
+    {
+        // soft_reset, set ANAR, kick auto-neg, ...
         # Ok(())
     }
-    fn poll_link(&mut self, bus: &mut B)
-        -> Result<Option<LinkStatus>, PhyError<B::Error>>
+
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M)
+        -> Result<Option<LinkStatus>, PhyError<M::Error>>
     {
-        // read BMSR, return Some(LinkStatus { ... }) when link comes up
+        // read BMSR, return Some(LinkStatus { .. }) when link comes up
         # Ok(None)
     }
-    fn capabilities(&self) -> eth_mdio_phy::PhyCapabilities {
-        # eth_mdio_phy::PhyCapabilities::default()
+
+    fn capabilities<M: MdioBus>(&self, mdio: &mut M)
+        -> Result<PhyCapabilities, PhyError<M::Error>>
+    {
+        ieee802_3::read_capabilities(mdio, self.addr)
+            .map_err(PhyError::Mdio)
     }
 }
 ```
@@ -55,8 +77,8 @@ Application code then drives the PHY through the trait without
 caring which chip is on the board:
 
 ```rust no_run
-# fn doc<B: eth_mdio_phy::MdioBus, P: eth_mdio_phy::PhyDriver<Bus = B>>
-# (mdio: &mut B, phy: &mut P) -> Result<(), eth_mdio_phy::PhyError<B::Error>>
+# fn doc<M: eth_mdio_phy::MdioBus, P: eth_mdio_phy::PhyDriver>
+# (mdio: &mut M, phy: &mut P) -> Result<(), eth_mdio_phy::PhyError<M::Error>>
 # {
 phy.init(mdio)?;
 while phy.poll_link(mdio)?.is_none() { /* idle */ }
