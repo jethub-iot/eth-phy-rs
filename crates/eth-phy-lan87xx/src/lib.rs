@@ -78,13 +78,15 @@ impl PhyDriver for PhyLan87xx {
 
         // 4. Advertise standard 10/100 capabilities.
         //
-        // After a cold-boot, a soft-reset via BMCR.RESET does not always
-        // restore ANAR to its documented default of 0x01E1 — the register
-        // can hold residual power-up state. Without an explicit write,
-        // auto-negotiation starts with a truncated advertisement; the
-        // partner negotiates 100/Full and link comes up, but unicast RX
-        // is dead at the PHY layer. Write the standard 10/100 selector
-        // explicitly to avoid that.
+        // After a cold boot, a soft-reset via BMCR.RESET does not always
+        // restore ANAR to its documented default of 0x01E1 — the
+        // register can retain a partial advertisement seeded from the
+        // silicon's reset-strap latch instead of the spec default.
+        // Without an explicit write, auto-negotiation starts with a
+        // truncated advertisement: the partner negotiates 100/Full,
+        // BMSR.LINK_STATUS goes up, but unicast RX is dead at the PHY
+        // layer. Write the standard 10/100 selector explicitly to
+        // sidestep the strap state.
         let anar = ieee802_3::anar::TX_FD
             | ieee802_3::anar::TX_HD
             | ieee802_3::anar::T10_FD
@@ -112,6 +114,15 @@ impl PhyDriver for PhyLan87xx {
         let pscsr = mdio
             .read(self.addr, regs::pscsr::ADDR)
             .map_err(PhyError::Mdio)?;
+        // PSCSR speed/duplex bits are only valid after AUTODONE is set.
+        // On parallel-detection links BMSR.LINK_STATUS can latch high
+        // while auto-negotiation is still converging, and reading PSCSR
+        // in that window returns indeterminate speed bits — exactly the
+        // class of bug the explicit ANAR write is meant to prevent.
+        if pscsr & regs::pscsr::AUTODONE == 0 {
+            self.link_up = false;
+            return Ok(None);
+        }
         let status = Self::parse_pscsr(pscsr);
         self.link_up = status.is_some();
         Ok(status)
@@ -343,10 +354,10 @@ mod tests {
         let mut phy = PhyLan87xx::new(1);
         phy.init(&mut mdio).unwrap();
 
-        let anar_write = mdio
+        let anar_idx = mdio
             .writes
             .iter()
-            .find(|&&(_, reg, _)| reg == eth_mdio_phy::ieee802_3::regs::ANAR)
+            .position(|&(_, reg, _)| reg == eth_mdio_phy::ieee802_3::regs::ANAR)
             .expect("expected a write to ANAR");
         let expected = eth_mdio_phy::ieee802_3::anar::TX_FD
             | eth_mdio_phy::ieee802_3::anar::TX_HD
@@ -354,8 +365,40 @@ mod tests {
             | eth_mdio_phy::ieee802_3::anar::T10_HD
             | eth_mdio_phy::ieee802_3::anar::SELECTOR_IEEE802_3;
         assert_eq!(
-            anar_write.2, expected,
+            mdio.writes[anar_idx].2, expected,
             "ANAR must advertise standard 10/100 full+half + 802.3 selector"
+        );
+
+        // The whole point of writing ANAR explicitly is to seed the
+        // advertisement BEFORE auto-neg restarts. Use `rposition` rather
+        // than `position` so the assertion catches a regression where a
+        // future refactor inserts an extra BMCR.AN write *before* ANAR
+        // — `position` would find the earliest match and silently pass.
+        let bmcr_an_idx = mdio
+            .writes
+            .iter()
+            .rposition(|&(_, reg, val)| {
+                reg == eth_mdio_phy::ieee802_3::regs::BMCR
+                    && (val
+                        & (eth_mdio_phy::ieee802_3::bmcr::AN_ENABLE
+                            | eth_mdio_phy::ieee802_3::bmcr::AN_RESTART))
+                        != 0
+            })
+            .expect("expected a BMCR write that enables/restarts auto-neg");
+        assert!(
+            anar_idx < bmcr_an_idx,
+            "ANAR (write #{anar_idx}) must be programmed BEFORE BMCR.AN_ENABLE/AN_RESTART (write #{bmcr_an_idx})",
+        );
+
+        // Lock down the exact MDIO write sequence — anything inserted
+        // between ANAR and the AN_RESTART would silently invalidate the
+        // advertisement. Today: BMCR.RESET, MCSR (EDPD clear), ANAR,
+        // BMCR (AN_ENABLE | AN_RESTART) — exactly four writes.
+        assert_eq!(
+            mdio.writes.len(),
+            4,
+            "init must emit exactly 4 MDIO writes (got {:?})",
+            mdio.writes,
         );
     }
 
@@ -419,8 +462,8 @@ mod tests {
     #[test]
     fn poll_link_100_full() {
         let mut mdio = MockMdio::new(vec![
-            bmsr::LINK_STATUS,         // is_link_up → true
-            regs::pscsr::SPEED_100_FD, // PSCSR → 100 Mbps full duplex
+            bmsr::LINK_STATUS,                                 // is_link_up → true
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_FD, // PSCSR → 100 Mbps full duplex
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
@@ -430,7 +473,10 @@ mod tests {
 
     #[test]
     fn poll_link_10_half() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_10_HD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_HD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
@@ -438,7 +484,10 @@ mod tests {
 
     #[test]
     fn poll_link_100_half() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_100_HD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_HD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
@@ -446,7 +495,10 @@ mod tests {
 
     #[test]
     fn poll_link_10_full() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_10_FD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_FD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Full)));
@@ -457,11 +509,30 @@ mod tests {
         // PSCSR with 0b000 in speed/duplex field → unrecognised
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
-            0x0000, // speed/duplex bits = 0b000
+            regs::pscsr::AUTODONE, // AUTODONE set, speed bits = 0b000
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert!(result.is_none());
+        assert!(!phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_returns_none_when_autodone_clear() {
+        // Parallel-detection race: BMSR.LINK_STATUS latches high while
+        // auto-negotiation is still converging. PSCSR speed bits are
+        // indeterminate in that window; poll_link must report "no link
+        // yet" so the caller keeps polling instead of acting on garbage.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            regs::pscsr::SPEED_100_FD, // valid-looking, but AUTODONE not set
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert!(
+            result.is_none(),
+            "must wait for AUTODONE before decoding speed"
+        );
         assert!(!phy.link_up);
     }
 
