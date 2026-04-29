@@ -6,7 +6,7 @@ rust-version  = "1.75"
 authors       = ["Viacheslav Bocharov <v@baodeep.com>", "JetHome (r)"]
 license       = "GPL-2.0-or-later OR Apache-2.0"
 description   = "MDIO-based Ethernet PHY traits and IEEE 802.3 helpers for no_std"
-repository    = "https://github.com/jethub-iot/eth-phy"
+repository    = "https://github.com/jethub-iot/eth-phy-rs"
 keywords      = ["embedded", "no-std", "ethernet", "phy", "mdio"]
 categories    = ["embedded", "no-std", "hardware-support"]
 
