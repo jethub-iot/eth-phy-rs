@@ -76,7 +76,26 @@ impl PhyDriver for PhyLan87xx {
         mdio.write(self.addr, regs::mcsr::ADDR, mcsr & !regs::mcsr::EDPD_EN)
             .map_err(PhyError::Mdio)?;
 
-        // 4. Enable auto-negotiation
+        // 4. Advertise standard 10/100 capabilities.
+        //
+        // After a cold boot, a soft-reset via BMCR.RESET does not always
+        // restore ANAR to its documented default of 0x01E1 — the
+        // register can retain a partial advertisement seeded from the
+        // silicon's reset-strap latch instead of the spec default.
+        // Without an explicit write, auto-negotiation starts with a
+        // truncated advertisement: the partner negotiates 100/Full,
+        // BMSR.LINK_STATUS goes up, but unicast RX is dead at the PHY
+        // layer. Write the standard 10/100 selector explicitly to
+        // sidestep the strap state.
+        let anar = ieee802_3::anar::TX_FD
+            | ieee802_3::anar::TX_HD
+            | ieee802_3::anar::T10_FD
+            | ieee802_3::anar::T10_HD
+            | ieee802_3::anar::SELECTOR_IEEE802_3;
+        mdio.write(self.addr, ieee802_3::regs::ANAR, anar)
+            .map_err(PhyError::Mdio)?;
+
+        // 5. Enable auto-negotiation
         ieee802_3::enable_auto_negotiation(mdio, self.addr).map_err(PhyError::Mdio)?;
 
         self.link_up = false;
@@ -92,10 +111,48 @@ impl PhyDriver for PhyLan87xx {
             self.link_up = false;
             return Ok(None);
         }
-        let pscsr = mdio
-            .read(self.addr, regs::pscsr::ADDR)
+
+        // Auto-negotiation vs. forced link is decided by BMCR.AN_ENABLE.
+        // The two paths have different validity rules and use different
+        // registers to read back speed/duplex.
+        let bmcr = mdio
+            .read(self.addr, ieee802_3::regs::BMCR)
             .map_err(PhyError::Mdio)?;
-        let status = Self::parse_pscsr(pscsr);
+
+        let status = if bmcr & ieee802_3::bmcr::AN_ENABLE != 0 {
+            // Auto-neg path: PSCSR speed/duplex bits are only valid
+            // after AUTODONE is set. On parallel-detection links
+            // BMSR.LINK_STATUS can latch high while auto-negotiation
+            // is still converging, and reading PSCSR in that window
+            // returns indeterminate speed bits — exactly the class of
+            // bug the explicit ANAR write is meant to prevent.
+            let pscsr = mdio
+                .read(self.addr, regs::pscsr::ADDR)
+                .map_err(PhyError::Mdio)?;
+            if pscsr & regs::pscsr::AUTODONE == 0 {
+                self.link_up = false;
+                return Ok(None);
+            }
+            Self::parse_pscsr(pscsr)
+        } else {
+            // Forced-link path (`ieee802_3::force_link` clears
+            // AN_ENABLE and programs SPEED_100 / DUPLEX_FULL directly
+            // in BMCR). PSCSR may never set AUTODONE in this mode, so
+            // read speed/duplex straight from BMCR. Link is reported
+            // as soon as BMSR.LINK_STATUS goes up.
+            let speed = if bmcr & ieee802_3::bmcr::SPEED_100 != 0 {
+                Speed::Mbps100
+            } else {
+                Speed::Mbps10
+            };
+            let duplex = if bmcr & ieee802_3::bmcr::DUPLEX_FULL != 0 {
+                Duplex::Full
+            } else {
+                Duplex::Half
+            };
+            Some(LinkStatus::new(speed, duplex))
+        };
+
         self.link_up = status.is_some();
         Ok(status)
     }
@@ -312,6 +369,77 @@ mod tests {
     }
 
     #[test]
+    fn init_writes_anar_standard_advertisement() {
+        // Cold-boot soft-reset does not always restore ANAR to its
+        // default value, so init must write the standard 10/100
+        // advertisement explicitly.
+        let mut mdio = MockMdio::new(vec![
+            0x0000,              // soft_reset poll
+            0x0007,              // PHYIDR1
+            0xC0F0,              // PHYIDR2
+            regs::mcsr::EDPD_EN, // MCSR
+            0x0000,              // BMCR for enable_auto_negotiation
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.init(&mut mdio).unwrap();
+
+        let anar_idx = mdio
+            .writes
+            .iter()
+            .position(|&(_, reg, _)| reg == eth_mdio_phy::ieee802_3::regs::ANAR)
+            .expect("expected a write to ANAR");
+        let expected = eth_mdio_phy::ieee802_3::anar::TX_FD
+            | eth_mdio_phy::ieee802_3::anar::TX_HD
+            | eth_mdio_phy::ieee802_3::anar::T10_FD
+            | eth_mdio_phy::ieee802_3::anar::T10_HD
+            | eth_mdio_phy::ieee802_3::anar::SELECTOR_IEEE802_3;
+        assert_eq!(
+            mdio.writes[anar_idx].2, expected,
+            "ANAR must advertise standard 10/100 full+half + 802.3 selector"
+        );
+
+        // The whole point of writing ANAR explicitly is to seed the
+        // advertisement BEFORE auto-neg restarts. Use `rposition` rather
+        // than `position` so the assertion catches a regression where a
+        // future refactor inserts an extra BMCR.AN write *before* ANAR
+        // — `position` would find the earliest match and silently pass.
+        let bmcr_an_idx = mdio
+            .writes
+            .iter()
+            .rposition(|&(_, reg, val)| {
+                reg == eth_mdio_phy::ieee802_3::regs::BMCR
+                    && (val
+                        & (eth_mdio_phy::ieee802_3::bmcr::AN_ENABLE
+                            | eth_mdio_phy::ieee802_3::bmcr::AN_RESTART))
+                        != 0
+            })
+            .expect("expected a BMCR write that enables/restarts auto-neg");
+        assert!(
+            anar_idx < bmcr_an_idx,
+            "ANAR (write #{anar_idx}) must be programmed BEFORE BMCR.AN_ENABLE/AN_RESTART (write #{bmcr_an_idx})",
+        );
+
+        // Behavioural invariant (not a write-count one): no BMCR write
+        // that enables/restarts auto-negotiation must occur BEFORE the
+        // ANAR write — that would kick negotiation against the stale
+        // advertisement, defeating the whole point of writing ANAR
+        // explicitly. Anything else (vendor setup, status acks, LED
+        // tweaks) is fair game: only the AN_RESTART that actually
+        // triggers negotiation needs to see the explicit ANAR value.
+        let pre_anar_an_restart = mdio.writes[..anar_idx].iter().any(|&(_, reg, val)| {
+            reg == eth_mdio_phy::ieee802_3::regs::BMCR
+                && (val
+                    & (eth_mdio_phy::ieee802_3::bmcr::AN_ENABLE
+                        | eth_mdio_phy::ieee802_3::bmcr::AN_RESTART))
+                    != 0
+        });
+        assert!(
+            !pre_anar_an_restart,
+            "BMCR.AN_ENABLE/AN_RESTART must not be issued before the ANAR write",
+        );
+    }
+
+    #[test]
     fn init_disables_edpd() {
         // Same as init_success; verify the MCSR write clears EDPD_EN
         let mcsr_initial: u16 = regs::mcsr::EDPD_EN | regs::mcsr::ENERGYON;
@@ -371,8 +499,9 @@ mod tests {
     #[test]
     fn poll_link_100_full() {
         let mut mdio = MockMdio::new(vec![
-            bmsr::LINK_STATUS,         // is_link_up → true
-            regs::pscsr::SPEED_100_FD, // PSCSR → 100 Mbps full duplex
+            bmsr::LINK_STATUS,                                 // is_link_up → true
+            ieee802_3::bmcr::AN_ENABLE,                        // BMCR — auto-neg path
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_FD, // PSCSR → 100 Mbps full duplex
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
@@ -382,7 +511,11 @@ mod tests {
 
     #[test]
     fn poll_link_10_half() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_10_HD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_HD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
@@ -390,7 +523,11 @@ mod tests {
 
     #[test]
     fn poll_link_100_half() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_100_HD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_100_HD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
@@ -398,7 +535,11 @@ mod tests {
 
     #[test]
     fn poll_link_10_full() {
-        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, regs::pscsr::SPEED_10_FD]);
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
+            regs::pscsr::AUTODONE | regs::pscsr::SPEED_10_FD,
+        ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Full)));
@@ -409,12 +550,71 @@ mod tests {
         // PSCSR with 0b000 in speed/duplex field → unrecognised
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
-            0x0000, // speed/duplex bits = 0b000
+            ieee802_3::bmcr::AN_ENABLE,
+            regs::pscsr::AUTODONE, // AUTODONE set, speed bits = 0b000
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert!(result.is_none());
         assert!(!phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_returns_none_when_autodone_clear() {
+        // Parallel-detection race: BMSR.LINK_STATUS latches high while
+        // auto-negotiation is still converging. PSCSR speed bits are
+        // indeterminate in that window; poll_link must report "no link
+        // yet" so the caller keeps polling instead of acting on garbage.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::AN_ENABLE,
+            regs::pscsr::SPEED_100_FD, // valid-looking, but AUTODONE not set
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert!(
+            result.is_none(),
+            "must wait for AUTODONE before decoding speed"
+        );
+        assert!(!phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_forced_100_full() {
+        // ieee802_3::force_link clears AN_ENABLE and writes
+        // SPEED_100 | DUPLEX_FULL into BMCR. AUTODONE may never set
+        // in this mode, so poll_link must decode straight from BMCR.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::SPEED_100 | ieee802_3::bmcr::DUPLEX_FULL,
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Full)));
+        assert!(phy.link_up);
+    }
+
+    #[test]
+    fn poll_link_forced_10_half() {
+        // forced 10HD: AN_ENABLE/SPEED_100/DUPLEX_FULL all clear.
+        let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, 0x0000]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+    }
+
+    #[test]
+    fn poll_link_forced_skips_pscsr_read() {
+        // In forced-link mode poll_link must NOT read PSCSR — providing
+        // only two read responses (BMSR + BMCR) would panic in the
+        // mock if a third read happened.
+        let mut mdio = MockMdio::new(vec![
+            bmsr::LINK_STATUS,
+            ieee802_3::bmcr::SPEED_100, // SPEED_100, DUPLEX clear → 100/Half
+        ]);
+        let mut phy = PhyLan87xx::new(1);
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
     }
 
     #[test]

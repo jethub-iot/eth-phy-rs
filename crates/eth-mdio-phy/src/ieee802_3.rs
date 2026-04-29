@@ -106,8 +106,13 @@ pub mod anlpar {
 
 /// Perform a software reset on the PHY.
 ///
-/// Writes the RESET bit in BMCR and polls up to `max_attempts` times
-/// until the bit self-clears.
+/// Writes BMCR with `RESET` (`0x8000`) and polls up to `max_attempts`
+/// times until the bit self-clears. The write is intentionally raw —
+/// per IEEE 802.3 Clause 22.1.2.5 a soft reset reloads the PHY's
+/// internal default register state, so other BMCR bits (`SPEED_100`,
+/// `DUPLEX_FULL`, `AN_ENABLE`, `ISOLATE`, ...) do not need to be
+/// preserved across the call. Whatever the caller programmed before
+/// this function runs is gone afterwards.
 ///
 /// Returns `Ok(true)` if reset completed (bit cleared),
 /// `Ok(false)` if `max_attempts` exhausted (bit still set).

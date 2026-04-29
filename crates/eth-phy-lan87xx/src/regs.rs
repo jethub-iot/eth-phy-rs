@@ -32,9 +32,10 @@ pub mod mcsr {
 pub mod pscsr {
     /// Register address.
     pub const ADDR: u8 = 31;
-    /// Auto-negotiation done indicator.
-    /// Used in tests to verify parse_pscsr ignores non-speed bits.
-    #[cfg(test)]
+    /// Auto-negotiation done indicator. The speed / duplex indication
+    /// field (bits [4:2]) is only valid once this bit is set; reading
+    /// PSCSR before AUTODONE can return indeterminate values during
+    /// the parallel-detection convergence window.
     pub const AUTODONE: u16 = 1 << 12;
     /// Mask for the speed/duplex indication field (bits [4:2]).
     pub const SPEED_DUPLEX_MASK: u16 = 0b111 << 2;
