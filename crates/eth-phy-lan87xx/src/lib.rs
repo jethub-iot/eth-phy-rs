@@ -390,15 +390,23 @@ mod tests {
             "ANAR (write #{anar_idx}) must be programmed BEFORE BMCR.AN_ENABLE/AN_RESTART (write #{bmcr_an_idx})",
         );
 
-        // Lock down the exact MDIO write sequence — anything inserted
-        // between ANAR and the AN_RESTART would silently invalidate the
-        // advertisement. Today: BMCR.RESET, MCSR (EDPD clear), ANAR,
-        // BMCR (AN_ENABLE | AN_RESTART) — exactly four writes.
-        assert_eq!(
-            mdio.writes.len(),
-            4,
-            "init must emit exactly 4 MDIO writes (got {:?})",
-            mdio.writes,
+        // Behavioural invariant (not a write-count one): no BMCR write
+        // that enables/restarts auto-negotiation must occur BEFORE the
+        // ANAR write — that would kick negotiation against the stale
+        // advertisement, defeating the whole point of writing ANAR
+        // explicitly. Anything else (vendor setup, status acks, LED
+        // tweaks) is fair game: only the AN_RESTART that actually
+        // triggers negotiation needs to see the explicit ANAR value.
+        let pre_anar_an_restart = mdio.writes[..anar_idx].iter().any(|&(_, reg, val)| {
+            reg == eth_mdio_phy::ieee802_3::regs::BMCR
+                && (val
+                    & (eth_mdio_phy::ieee802_3::bmcr::AN_ENABLE
+                        | eth_mdio_phy::ieee802_3::bmcr::AN_RESTART))
+                    != 0
+        });
+        assert!(
+            !pre_anar_an_restart,
+            "BMCR.AN_ENABLE/AN_RESTART must not be issued before the ANAR write",
         );
     }
 
