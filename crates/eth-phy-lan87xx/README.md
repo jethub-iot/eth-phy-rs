@@ -1,8 +1,7 @@
 # eth-phy-lan87xx
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
-[![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx)
-[![Documentation](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx)
+[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#installation) — not yet on crates.io / docs.rs
 
 `#![no_std]` MDIO driver for the Microchip LAN87xx family of 10/100
 Ethernet PHYs:
@@ -13,20 +12,31 @@ Ethernet PHYs:
 * LAN8741A
 * LAN8742A
 
-Implements [`eth_mdio_phy::PhyDriver`](https://docs.rs/eth-mdio-phy),
-so any MAC that exposes `eth_mdio_phy::MdioBus` can drive the chip —
-typical case is the ESP32 built-in EMAC SMI controller via
-[`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
+Implements [`eth_mdio_phy::PhyDriver`](../eth-mdio-phy/), so any MAC
+that exposes `eth_mdio_phy::MdioBus` can drive the chip — typical
+case is the ESP32 built-in EMAC SMI controller via
+[`esp_emac::mdio::EspMdio`](https://github.com/jethub-iot/esp-emac-rs).
 
 ---
 
 ## Installation
 
+The crate is **not yet published to crates.io.** Add the parent
+`eth-phy` repository as a git submodule and reference both crates
+via local paths:
+
+```sh
+git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
+git submodule update --init --recursive
+```
+
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.1"
-eth-phy-lan87xx = "0.1"
+eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
 ```
+
+Once published, both become plain `version = "..."` deps.
 
 | Feature | Default | Pulls in |
 | --- | --- | --- |
@@ -39,8 +49,8 @@ target is the MAC layer's problem, not this crate's.
 
 | Crate | Version |
 | --- | --- |
-| `eth-mdio-phy` | 0.1.x |
-| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.1.x |
+| `eth-mdio-phy` | 0.1.x (sibling crate) |
+| For ESP32: [`esp-emac`](https://github.com/jethub-iot/esp-emac-rs) | 0.1.x |
 
 ---
 
@@ -81,23 +91,29 @@ For the full embassy-net + DHCP example see
 
 If your board exposes a GPIO-driven PHY `nRST` line, use
 `PhyLan87xxWithReset<P>` instead of `PhyLan87xx`. It wraps the same
-driver and adds a `hardware_reset()` method that pulses the reset
-pin (~25 ms low → high) before the software init. Most JXD modules
-do **not** route `nRST` to the MCU; for those use plain `PhyLan87xx`.
+driver and adds a `hardware_reset()` method that drives `nRST` low
+for 2 ms, then deasserts and waits 25 ms before MDIO becomes
+accessible (LAN8720A datasheet Table 4-2). Most JXD modules do
+**not** route `nRST` to the MCU; for those use plain `PhyLan87xx`.
 
 ```rust no_run
 use embedded_hal::{delay::DelayNs, digital::OutputPin};
-use eth_mdio_phy::{MdioBus, PhyDriver};
+use eth_mdio_phy::{MdioBus, PhyDriver, PhyError};
 use eth_phy_lan87xx::PhyLan87xxWithReset;
 
-# fn example<P: OutputPin, D: DelayNs, M: MdioBus>(
-#     reset: P, delay: &mut D, mdio: &mut M,
-# ) -> Result<(), eth_mdio_phy::PhyError<M::Error>> {
+# fn example<P, D, M>(reset: P, delay: &mut D, mdio: &mut M)
+#     -> Result<(), MyError<P::Error, M::Error>>
+# where
+#     P: OutputPin,
+#     D: DelayNs,
+#     M: MdioBus,
+# {
 let mut phy = PhyLan87xxWithReset::new(/* MDIO addr */ 1, reset);
-phy.hardware_reset(delay);
-phy.init(mdio)?;
+phy.hardware_reset(delay).map_err(MyError::Pin)?;
+phy.init(mdio).map_err(MyError::Phy)?;
 # Ok(())
 # }
+# enum MyError<P, M> { Pin(P), Phy(PhyError<M>) }
 ```
 
 ## Bypassing auto-negotiation

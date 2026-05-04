@@ -1,8 +1,7 @@
 # eth-mdio-phy
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
-[![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy)
-[![Documentation](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy)
+[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#installation) — not yet on crates.io / docs.rs
 
 Trait crate that decouples MDIO bus implementations from the PHYs
 they talk to. `#![no_std]`, no allocations, no platform dependency.
@@ -11,10 +10,21 @@ they talk to. `#![no_std]`, no allocations, no platform dependency.
 
 ## Installation
 
+The crate is **not yet published to crates.io.** Add the parent
+`eth-phy` repository as a git submodule and reference this crate
+via a local path:
+
+```sh
+git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
+git submodule update --init --recursive
+```
+
 ```toml
 [dependencies]
-eth-mdio-phy = "0.1"
+eth-mdio-phy = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
 ```
+
+Once published, this becomes a plain `version = "..."` dep.
 
 | Feature | Default | Pulls in |
 | --- | --- | --- |
@@ -94,8 +104,15 @@ impl PhyDriver for MyPhy {
     fn init<M: MdioBus>(&mut self, mdio: &mut M)
         -> Result<(), PhyError<M::Error>>
     {
-        // 1. Soft reset.
-        ieee802_3::soft_reset(mdio, self.addr).map_err(PhyError::Mdio)?;
+        // 1. Soft reset. `soft_reset` returns Ok(true) when the
+        //    BMCR.RESET bit self-cleared within `max_attempts`,
+        //    Ok(false) on timeout. The caller decides how to map
+        //    a timeout to a higher-level error.
+        let cleared = ieee802_3::soft_reset(mdio, self.addr, /* max_attempts */ 100)
+            .map_err(PhyError::Mdio)?;
+        if !cleared {
+            return Err(PhyError::ResetTimeout);
+        }
         // 2. Programme ANAR — *write the value you actually want*,
         //    do not rely on hardware default coming back from reset.
         mdio.write(self.addr, ieee802_3::regs::ANAR, 0x01E1)
