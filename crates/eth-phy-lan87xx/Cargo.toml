@@ -1,17 +1,23 @@
 [package]
 name          = "eth-phy-lan87xx"
-version       = "0.1.0"
+version       = "0.1.1"
 edition       = "2021"
 rust-version  = "1.75"
 authors       = ["Viacheslav Bocharov <v@baodeep.com>", "JetHome (r)"]
 license       = "GPL-2.0-or-later OR Apache-2.0"
 description   = "LAN8720A/8710A/8740A/8742A Ethernet PHY driver for no_std over MDIO"
 repository    = "https://github.com/jethub-iot/eth-phy-rs"
+documentation = "https://docs.rs/eth-phy-lan87xx"
+readme        = "README.md"
 keywords      = ["embedded", "no-std", "ethernet", "phy", "lan8720a"]
 categories    = ["embedded", "no-std", "hardware-support"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
-eth-mdio-phy = { version = "0.1.0", path = "../eth-mdio-phy" }
+eth-mdio-phy = { version = "0.1.1", path = "../eth-mdio-phy" }
 embedded-hal = "1.0"
 defmt        = { version = "0.3", optional = true }
 
