@@ -8,16 +8,43 @@ heap, no platform dependency).
 The workspace is split into two crates so a board-bringup author can
 pick exactly the abstraction they need:
 
-* **[`eth-mdio-phy`](crates/eth-mdio-phy/)** — `MdioBus` and
-  `PhyDriver` traits, IEEE 802.3 Clause 22 register helpers, shared
-  `Speed` / `Duplex` / `LinkStatus` / `PhyCapabilities` types.
-* **[`eth-phy-lan87xx`](crates/eth-phy-lan87xx/)** — driver for the
-  Microchip LAN87xx family
-  (LAN8710A / LAN8720A / LAN8740A / LAN8741A / LAN8742A).
+| Crate | Purpose | Crates.io | docs.rs |
+| --- | --- | --- | --- |
+| [`eth-mdio-phy`](crates/eth-mdio-phy/) | `MdioBus` and `PhyDriver` traits, IEEE 802.3 Clause 22 helpers, shared `Speed`/`Duplex`/`LinkStatus`/`PhyCapabilities` types | [![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy) | [![docs](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy) |
+| [`eth-phy-lan87xx`](crates/eth-phy-lan87xx/) | Driver for the Microchip LAN87xx family (LAN8710A / LAN8720A / LAN8740A / LAN8741A / LAN8742A) | [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx) | [![docs](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx) |
 
 The MAC side is intentionally not part of this stack — provide any
 `MdioBus` impl and you can drive the PHY from any Ethernet MAC
 (ESP32 EMAC, STM32 ETH, custom FPGA SMI, mocks for unit tests, ...).
+
+## Installation
+
+### Driving a LAN87xx-family PHY
+
+```toml
+[dependencies]
+eth-mdio-phy    = "0.1"
+eth-phy-lan87xx = "0.1"
+```
+
+For ESP32 the MAC implementation is in
+[`esp-emac`](https://crates.io/crates/esp-emac):
+
+```toml
+esp-emac = { version = "0.1", features = ["esp-hal", "mdio-phy", "embassy-net"] }
+```
+
+### Implementing your own PHY driver
+
+```toml
+[dependencies]
+eth-mdio-phy = "0.1"
+```
+
+Then `impl PhyDriver for MyPhy { ... }` against the trait — see
+[`eth-mdio-phy/README.md`](crates/eth-mdio-phy/) for a worked
+example, including how to write a GPIO bit-bang `MdioBus` for
+boards that don't have an SMI peripheral.
 
 ## Why a separate trait crate
 
@@ -64,8 +91,8 @@ object-safe wrapper that fixes a single `MdioBus` implementation.
 
 ## Quick start
 
-The pairing with [`esp-emac`](https://github.com/jethub-iot/esp-emac-rs)
-on an ESP32 + LAN8720A board (PHY on MDIO addr 1):
+The pairing with [`esp-emac`](https://crates.io/crates/esp-emac) on an
+ESP32 + LAN8720A board (PHY on MDIO addr 1):
 
 ```rust no_run
 use esp_emac::mdio::EspMdio;
@@ -88,6 +115,9 @@ loop {
 # Ok(())
 # }
 ```
+
+For the full embassy-net + DHCP example see
+[`esp-emac/examples/embassy_net_lan8720a.rs`](https://github.com/jethub-iot/esp-emac-rs/blob/main/examples/embassy_net_lan8720a.rs).
 
 ## Hardware verified on
 

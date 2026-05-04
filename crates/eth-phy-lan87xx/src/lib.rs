@@ -1,19 +1,60 @@
 // SPDX-License-Identifier: GPL-2.0-or-later OR Apache-2.0
 // Copyright (c) Viacheslav Bocharov <v@baodeep.com> and JetHome (r)
 
-//! LAN87xx family Ethernet PHY driver.
+//! `#![no_std]` MDIO driver for the Microchip LAN87xx family of 10/100
+//! Ethernet PHYs:
 //!
-//! Supports LAN8710A, LAN8720A, LAN8740A, LAN8741A, LAN8742A over MDIO.
+//! - LAN8710A
+//! - LAN8720A
+//! - LAN8740A
+//! - LAN8741A
+//! - LAN8742A
 //!
-//! # Usage
+//! Implements [`eth_mdio_phy::PhyDriver`], so any MAC that exposes
+//! [`eth_mdio_phy::MdioBus`] can drive the chip — typical case is the
+//! ESP32 built-in EMAC SMI controller via
+//! [`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
 //!
-//! ```ignore
-//! let mut phy = PhyLan87xx::new(0);
-//! phy.init(&mut mdio)?;
-//! if let Some(link) = phy.poll_link(&mut mdio)? {
-//!     // link.speed, link.duplex
+//! See the crate
+//! [README](https://github.com/jethub-iot/eth-phy-rs/tree/main/crates/eth-phy-lan87xx)
+//! for installation, full embassy-net example, and a troubleshooting
+//! checklist (cold-boot ANAR quirk, MDIO bus failures, strap-pin
+//! pitfalls).
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use eth_mdio_phy::{MdioBus, PhyDriver};
+//! use eth_phy_lan87xx::PhyLan87xx;
+//!
+//! # fn example<M: MdioBus>(mdio: &mut M)
+//! # -> Result<(), eth_mdio_phy::PhyError<M::Error>>
+//! # {
+//! let mut phy = PhyLan87xx::new(/* PHY MDIO address */ 1);
+//! phy.init(mdio)?;
+//! loop {
+//!     if let Some(status) = phy.poll_link(mdio)? {
+//!         // status.speed, status.duplex
+//!         break;
+//!     }
 //! }
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! # Crate features
+//!
+//! | Feature | Default | When to enable |
+//! | --- | --- | --- |
+//! | `defmt` | off | Adds `defmt::Format` derives via `eth-mdio-phy/defmt`. |
+//!
+//! # Cold-boot ANAR quirk
+//!
+//! On a cold boot, `BMCR.RESET` does NOT restore `ANAR` to
+//! `0x01E1` on the LAN87xx family. The driver writes `ANAR = 0x01E1`
+//! explicitly before kicking auto-negotiation; if you reimplement
+//! this elsewhere, do the same — see the crate README's troubleshooting
+//! section.
 
 #![no_std]
 
