@@ -1,7 +1,9 @@
 # eth-mdio-phy
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#installation) — not yet on crates.io / docs.rs
+[![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy)
+[![Documentation](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy)
+[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 Trait crate that decouples MDIO bus implementations from the PHYs
 they talk to. `#![no_std]`, no allocations, no platform dependency.
@@ -10,27 +12,30 @@ they talk to. `#![no_std]`, no allocations, no platform dependency.
 
 ## Installation
 
-The crate is **not yet published to crates.io.** Add the parent
-`eth-phy` repository as a git submodule and reference this crate
-via a local path:
-
-```sh
-git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
-git submodule update --init --recursive
-```
-
 ```toml
 [dependencies]
-eth-mdio-phy = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+eth-mdio-phy = "0.1"
 ```
-
-Once published, this becomes a plain `version = "..."` dep.
 
 | Feature | Default | Pulls in |
 | --- | --- | --- |
 | `defmt` | off | `defmt::Format` derives on `LinkStatus`, `PhyCapabilities`, `PhyError` |
 
 **MSRV: 1.75.** Pure `#![no_std]` — works on any target.
+
+### Pre-publication
+
+> The crate **is not yet on crates.io** (this is the WIP badge). Until
+> it ships, vendor the parent `eth-phy-rs` repository via a git
+> submodule and reference this crate by `path`:
+>
+> ```sh
+> git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
+> ```
+>
+> ```toml
+> eth-mdio-phy = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+> ```
 
 ## Compatibility
 
@@ -210,20 +215,73 @@ chip-specific code.
 
 ### Mocking for tests
 
-A simple `MockMdioBus` lets you unit-test PHY logic with deterministic
-register state — no hardware-in-the-loop fixture needed:
+Two patterns work well; pick whichever maps better to what your driver
+actually does.
+
+**Scripted-response mock** — pre-load the exact reads in order, record
+writes for assertions, optionally inject a failure at a specific call
+index. This is what [`eth-phy-lan87xx`](../eth-phy-lan87xx/) uses to
+verify its init/poll sequences:
+
+```rust no_run
+use eth_mdio_phy::MdioBus;
+
+#[derive(Debug, PartialEq)]
+struct MockError;
+
+struct MockMdio {
+    reads: Vec<u16>,
+    read_idx: usize,
+    writes: Vec<(u8, u8, u16)>,
+    fail_at: Option<usize>,
+    call_count: usize,
+}
+
+impl MdioBus for MockMdio {
+    type Error = MockError;
+
+    fn read(&mut self, _phy_addr: u8, _reg_addr: u8)
+        -> Result<u16, Self::Error>
+    {
+        if self.fail_at == Some(self.call_count) {
+            self.call_count += 1;
+            return Err(MockError);
+        }
+        self.call_count += 1;
+        let val = self.reads[self.read_idx];
+        self.read_idx += 1;
+        Ok(val)
+    }
+
+    fn write(&mut self, phy_addr: u8, reg_addr: u8, value: u16)
+        -> Result<(), Self::Error>
+    {
+        if self.fail_at == Some(self.call_count) {
+            self.call_count += 1;
+            return Err(MockError);
+        }
+        self.call_count += 1;
+        self.writes.push((phy_addr, reg_addr, value));
+        Ok(())
+    }
+}
+```
+
+**Map-based mock** — random-access registers, useful when the driver's
+behaviour depends on arbitrary read order or many cross-register
+side-effects:
 
 ```rust no_run
 use eth_mdio_phy::MdioBus;
 use std::collections::HashMap;
 use core::convert::Infallible;
 
-pub struct MockMdioBus {
-    pub regs: HashMap<(u8, u8), u16>, // (phy_addr, reg_addr) -> value
+pub struct MockMdioMap {
+    pub regs: HashMap<(u8, u8), u16>,
     pub writes: Vec<(u8, u8, u16)>,
 }
 
-impl MdioBus for MockMdioBus {
+impl MdioBus for MockMdioMap {
     type Error = Infallible;
 
     fn read(&mut self, phy_addr: u8, reg_addr: u8)
@@ -242,7 +300,7 @@ impl MdioBus for MockMdioBus {
 }
 ```
 
-This is exactly the pattern used in `eth-phy-lan87xx`'s test suite.
+Both keep tests on the host, no hardware-in-the-loop fixture required.
 
 ---
 

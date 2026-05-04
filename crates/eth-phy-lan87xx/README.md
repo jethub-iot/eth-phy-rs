@@ -1,7 +1,9 @@
 # eth-phy-lan87xx
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#installation) — not yet on crates.io / docs.rs
+[![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx)
+[![Documentation](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx)
+[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 `#![no_std]` MDIO driver for the Microchip LAN87xx family of 10/100
 Ethernet PHYs:
@@ -12,31 +14,20 @@ Ethernet PHYs:
 * LAN8741A
 * LAN8742A
 
-Implements [`eth_mdio_phy::PhyDriver`](../eth-mdio-phy/), so any MAC
-that exposes `eth_mdio_phy::MdioBus` can drive the chip — typical
-case is the ESP32 built-in EMAC SMI controller via
-[`esp_emac::mdio::EspMdio`](https://github.com/jethub-iot/esp-emac-rs).
+Implements [`eth_mdio_phy::PhyDriver`](https://docs.rs/eth-mdio-phy),
+so any MAC that exposes `eth_mdio_phy::MdioBus` can drive the chip —
+typical case is the ESP32 built-in EMAC SMI controller via
+[`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
 
 ---
 
 ## Installation
 
-The crate is **not yet published to crates.io.** Add the parent
-`eth-phy` repository as a git submodule and reference both crates
-via local paths:
-
-```sh
-git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
-git submodule update --init --recursive
-```
-
 ```toml
 [dependencies]
-eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
-eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
+eth-mdio-phy    = "0.1"
+eth-phy-lan87xx = "0.1"
 ```
-
-Once published, both become plain `version = "..."` deps.
 
 | Feature | Default | Pulls in |
 | --- | --- | --- |
@@ -45,12 +36,27 @@ Once published, both become plain `version = "..."` deps.
 **MSRV: 1.75.** Pure `#![no_std]`. Works on any target — picking the
 target is the MAC layer's problem, not this crate's.
 
+### Pre-publication
+
+> The crates **are not yet on crates.io** (this is the WIP badge).
+> Until they ship, vendor the parent `eth-phy-rs` repository via a
+> git submodule and reference both crates by `path`:
+>
+> ```sh
+> git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
+> ```
+>
+> ```toml
+> eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+> eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
+> ```
+
 ## Compatibility
 
 | Crate | Version |
 | --- | --- |
-| `eth-mdio-phy` | 0.1.x (sibling crate) |
-| For ESP32: [`esp-emac`](https://github.com/jethub-iot/esp-emac-rs) | 0.1.x |
+| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.1.x |
+| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.1.x |
 
 ---
 

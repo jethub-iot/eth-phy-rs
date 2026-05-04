@@ -15,11 +15,11 @@
 //! ESP32 built-in EMAC SMI controller via
 //! [`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
 //!
-//! See the crate
-//! [README](https://github.com/jethub-iot/eth-phy-rs/tree/main/crates/eth-phy-lan87xx)
-//! for installation, full embassy-net example, and a troubleshooting
-//! checklist (cold-boot ANAR quirk, MDIO bus failures, strap-pin
-//! pitfalls).
+//! See the crate-level README (rendered on docs.rs and shipped via
+//! `Cargo.toml`'s `readme` field) for installation, the full
+//! embassy-net example via `esp-emac`, and a troubleshooting checklist
+//! covering the cold-boot ANAR quirk, MDIO bus failures, and strap-pin
+//! pitfalls.
 //!
 //! # Quick start
 //!

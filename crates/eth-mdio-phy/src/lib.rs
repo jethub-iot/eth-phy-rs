@@ -18,9 +18,10 @@
 //! - Shared types: [`Speed`], [`Duplex`], [`LinkStatus`],
 //!   [`PhyCapabilities`], [`PhyError`].
 //!
-//! See the crate [README](https://github.com/jethub-iot/eth-phy-rs/tree/main/crates/eth-mdio-phy)
-//! for installation, worked PHY-driver and MdioBus examples (including
-//! a mock for tests), and a Clause 22 frame breakdown.
+//! See the crate-level README (rendered on docs.rs and shipped via
+//! `Cargo.toml`'s `readme` field) for installation, worked
+//! PhyDriver and MdioBus examples, mock recipes for tests, and a
+//! Clause 22 frame breakdown for GPIO bit-bang implementations.
 //!
 //! # Quick start
 //!
