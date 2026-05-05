@@ -194,6 +194,13 @@ also match `PhyLan87xxWithReset`.
   (BEACONs are being TX'd as coordinator or RX'd as follower);
   returns `None` while the bus is still synchronising.
 
+The branch is selected by the driver's internal flag, which
+`configure_plca` sets and `disable_plca` / `init` clear. The driver
+assumes a **single-owner contract**: it is the sole writer to the
+PHY's registers. If a different host or task flips
+`PLCA_CTRL0.EN` directly via MDIO between calls, this driver will
+not notice — call `init` to resync.
+
 ## What `BMSR.LINK_STATUS` does NOT do
 
 It is hard-wired `1` on this chip. Calling

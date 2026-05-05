@@ -3,8 +3,11 @@
 
 //! PLCA (Physical Layer Collision Avoidance) configuration types.
 //!
-//! Implementation of `PhyLan867x::configure_plca` / `disable_plca` /
-//! `plca_status` lives in `lib.rs` and lands in a follow-up commit.
+//! `PlcaConfig` is the input to `PhyLan867x::configure_plca`,
+//! `PlcaStatus` the output of `PhyLan867x::plca_status`, and
+//! `PlcaError` the error type shared by `configure_plca`,
+//! `disable_plca`, and `plca_status`. The methods themselves are
+//! implemented on `PhyLan867x` in `lib.rs`.
 
 /// PLCA configuration (IEEE 802.3 Clause 148).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

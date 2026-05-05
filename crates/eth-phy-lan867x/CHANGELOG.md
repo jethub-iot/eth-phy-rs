@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `init` now clears the driver's cached PLCA state at the start, so a
+  re-initialisation after a previous `configure_plca` no longer leaves
+  `poll_link` querying `PLCA_STS.PST` against a soft-reset chip whose
+  PLCA is off (which would have made `poll_link` return `None`
+  permanently).
+- `configure_plca` now writes `PLCA_BURST` unconditionally rather than
+  only when `burst_count > 0`. A re-configuration with `burst_count = 0`
+  reliably clears the chip's `MAXBC`, undoing any prior burst-enabling
+  call. Datasheet sec 5.4.18 specifies `MAXBC = 0` as the explicit
+  "burst disabled" encoding.
+- `PlcaConfig::burst_timer = 0` now actually behaves as the documented
+  sentinel: `configure_plca` writes the chip default (`0x80`, 12.8 µs)
+  for `BTMR` instead of literally `0` (which would make burst mode
+  non-functional even when `MAXBC > 0`).
+
+### Documentation
+
+- Crate-level rustdoc and README clarify the single-owner contract:
+  the driver assumes it is the sole writer to the PHY's registers.
+  External writes to `PLCA_CTRL0.EN` between driver calls are not
+  observed; call `init` to resync.
+- `plca` module docs no longer claim its consumer methods land "in a
+  follow-up commit" — they shipped in v0.1.0.
+
 ### Added
 
 - `PhyLan867x` driver implementing `eth_mdio_phy::PhyDriver` for the

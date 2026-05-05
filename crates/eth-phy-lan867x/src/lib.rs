@@ -90,6 +90,14 @@ impl PhyDriver for PhyLan867x {
     }
 
     fn init<M: MdioBus>(&mut self, mdio: &mut M) -> Result<(), PhyError<M::Error>> {
+        // 0. Drop cached PLCA state. Soft reset (step 1) wipes the
+        //    chip's PLCA_CTRL0/CTRL1 registers back to defaults, so any
+        //    previous `configure_plca` is undone on the chip — the
+        //    driver's cache must follow. Single-owner contract: this
+        //    driver is the sole writer to the chip's registers, so we
+        //    don't need to read PLCA state back from silicon.
+        self.plca_id = None;
+
         // 1. Software reset (BMCR.SW_RESET, self-clearing). Bounded poll —
         //    matches the lan87xx driver's allowance.
         let cleared = ieee802_3::soft_reset(mdio, self.addr, 500).map_err(PhyError::Mdio)?;
@@ -183,6 +191,13 @@ impl PhyDriver for PhyLan867x {
         //   (coordinator) or RX'd (follower). It is the only meaningful
         //   "are we participating in the network" indicator. Report
         //   linked when set; report None until the bus stabilises.
+        //
+        // The branch is selected by `self.plca_id`, which `configure_plca`
+        // sets and `disable_plca` / `init` clear. Single-owner contract:
+        // this driver is assumed to be the sole writer to the chip's
+        // registers, so the driver-side flag is authoritative. If
+        // someone else flips `PLCA_CTRL0.EN` directly via MDIO between
+        // our `configure_plca` and a `poll_link`, we will not notice.
         match self.plca_id {
             None => Ok(Some(LinkStatus::new(Speed::Mbps10, Duplex::Half))),
             Some(_) => {
@@ -252,18 +267,28 @@ impl PhyLan867x {
         )
         .map_err(PlcaError::Mdio)?;
 
-        // Burst mode is opt-in (MAXBC = 0 means single-frame TXOPs).
-        if config.burst_count > 0 {
-            let burst = (u16::from(config.burst_count) << 8) | u16::from(config.burst_timer);
-            mmd::mmd_write(
-                mdio,
-                self.addr,
-                regs::MMD_VS2,
-                regs::MMD_REG_PLCA_BURST,
-                burst,
-            )
-            .map_err(PlcaError::Mdio)?;
-        }
+        // Always program PLCA_BURST so a re-configuration with
+        // `burst_count = 0` reliably clears MAXBC, undoing any prior
+        // configure_plca that enabled bursting. Per datasheet sec
+        // 5.4.18, MAXBC = 0 is the explicit "burst disabled" encoding.
+        // burst_timer = 0 in PlcaConfig is a sentinel that means "leave
+        // chip default of 0x80" — interpret it here so users don't
+        // accidentally write BTMR = 0 (which would make burst mode
+        // non-functional even when MAXBC > 0).
+        let btmr = if config.burst_timer == 0 {
+            0x80_u16
+        } else {
+            u16::from(config.burst_timer)
+        };
+        let burst = (u16::from(config.burst_count) << 8) | btmr;
+        mmd::mmd_write(
+            mdio,
+            self.addr,
+            regs::MMD_VS2,
+            regs::MMD_REG_PLCA_BURST,
+            burst,
+        )
+        .map_err(PlcaError::Mdio)?;
 
         // Flip the enable bit last, after CTRL1 is in place. RMW preserves
         // any other bits that future silicon revisions might define.
@@ -861,8 +886,10 @@ mod tests {
         let writes = mmdad_data_writes(&mdio);
         // CTRL1 = (8 << 8) | 0 = 0x0800
         assert_eq!(writes[0], 0x0800, "CTRL1 = NCNT(8) << 8 | ID(0)");
-        // PLCA_CTRL0 RMW final value = EN.
-        assert_eq!(writes[1], regs::PLCA_CTRL0_EN);
+        // PLCA_CTRL0 RMW final value = EN. Whatever else gets programmed
+        // in between (PLCA_BURST), EN must be the last write — the
+        // ordering invariant is what the dedicated test below enforces.
+        assert_eq!(*writes.last().unwrap(), regs::PLCA_CTRL0_EN);
         assert_eq!(phy.plca_id, Some(0));
     }
 
@@ -892,7 +919,11 @@ mod tests {
     }
 
     #[test]
-    fn configure_plca_skips_burst_register_when_burst_count_zero() {
+    fn configure_plca_always_writes_burst_register_with_maxbc_zero() {
+        // Re-configuring a previously-bursting node with `burst_count = 0`
+        // must clear MAXBC on the chip. configure_plca therefore writes
+        // PLCA_BURST unconditionally — MAXBC = 0 is the explicit
+        // "burst disabled" encoding per datasheet sec 5.4.18.
         let mut mdio = MockMdio::new(vec![0x0000]);
         let mut phy = PhyLan867x::new(0);
         phy.configure_plca(
@@ -901,14 +932,77 @@ mod tests {
                 node_id: 1,
                 node_count: 8,
                 burst_count: 0,
-                burst_timer: 0xAA, // ignored when burst disabled
+                burst_timer: 0, // sentinel
             },
         )
         .unwrap();
 
-        let writes = mmdad_data_writes(&mdio);
-        // Only two data writes: CTRL1 + CTRL0.EN. No burst register.
-        assert_eq!(writes.len(), 2);
+        // Find the PLCA_BURST write — its MMDAD address-write carries
+        // 0xCA05; the immediately-following data-write is the value.
+        let burst_data_idx = mdio
+            .writes
+            .iter()
+            .position(|&(_, reg, val)| reg == regs::REG_MMDAD && val == regs::MMD_REG_PLCA_BURST)
+            .expect("expected an MMDAD address-write to PLCA_BURST")
+            + 2; // skip MMDCTRL_DATA write that follows
+        let burst_value = mdio.writes[burst_data_idx].2;
+        // MAXBC = 0 (burst disabled), BTMR = 0x80 (sentinel default).
+        assert_eq!(burst_value, 0x0080);
+    }
+
+    #[test]
+    fn configure_plca_burst_timer_zero_uses_sentinel_default() {
+        // burst_count > 0 with burst_timer = 0 — the sentinel MUST be
+        // applied so BTMR lands at the chip default (0x80) rather than
+        // literally 0 (which would make burst mode non-functional).
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 0,
+                node_count: 8,
+                burst_count: 4,
+                burst_timer: 0, // sentinel ⇒ BTMR = 0x80
+            },
+        )
+        .unwrap();
+
+        let burst_data_idx = mdio
+            .writes
+            .iter()
+            .position(|&(_, reg, val)| reg == regs::REG_MMDAD && val == regs::MMD_REG_PLCA_BURST)
+            .unwrap()
+            + 2;
+        let burst_value = mdio.writes[burst_data_idx].2;
+        // MAXBC = 4, BTMR = 0x80.
+        assert_eq!(burst_value, 0x0480);
+    }
+
+    #[test]
+    fn configure_plca_burst_timer_nonzero_passes_through() {
+        // Non-zero burst_timer must NOT be touched by the sentinel.
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 0,
+                node_count: 8,
+                burst_count: 4,
+                burst_timer: 0x40,
+            },
+        )
+        .unwrap();
+
+        let burst_data_idx = mdio
+            .writes
+            .iter()
+            .position(|&(_, reg, val)| reg == regs::REG_MMDAD && val == regs::MMD_REG_PLCA_BURST)
+            .unwrap()
+            + 2;
+        let burst_value = mdio.writes[burst_data_idx].2;
+        assert_eq!(burst_value, 0x0440);
     }
 
     #[test]
@@ -1057,6 +1151,92 @@ mod tests {
             .unwrap();
         let result = phy.poll_link(&mut mdio).unwrap();
         assert!(result.is_none(), "PST=0 ⇒ link not yet up");
+    }
+
+    #[test]
+    fn init_clears_cached_plca_id() {
+        // After a soft reset the chip's PLCA_CTRL0/CTRL1 are back to
+        // defaults (PLCA off). Driver-side `plca_id` must follow, or
+        // `poll_link` would keep reading PLCA_STS and reporting None
+        // forever even though the chip is actually CSMA/CD-ready.
+        // Single-owner contract justifies clearing rather than reading
+        // chip state back.
+        let mut mdio = MockMdio::new(reads_for_successful_init(regs::STRAP_CTRL0_PKGTYP_LAN8671));
+        let mut phy = PhyLan867x::new(0);
+        phy.plca_id = Some(3); // simulate prior configure_plca
+        phy.init(&mut mdio).unwrap();
+        assert_eq!(phy.plca_id, None);
+    }
+
+    #[test]
+    fn configure_plca_reconfigure_with_burst_zero_clears_chip_burst() {
+        // Regression: before this fix, configure_plca skipped the
+        // PLCA_BURST write whenever burst_count = 0, leaving prior
+        // burst settings on the chip. Now the BURST register is
+        // always programmed.
+        let mut mdio = MockMdio::new(vec![
+            0x0000, // pre-RMW PLCA_CTRL0 for first configure
+            0x0000, // pre-RMW PLCA_CTRL0 for second configure
+        ]);
+        let mut phy = PhyLan867x::new(0);
+
+        // First call: enable burst.
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 0,
+                node_count: 8,
+                burst_count: 4,
+                burst_timer: 0x40,
+            },
+        )
+        .unwrap();
+
+        // Second call: disable burst by passing burst_count = 0.
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 0,
+                node_count: 8,
+                burst_count: 0,
+                burst_timer: 0,
+            },
+        )
+        .unwrap();
+
+        // Walk the writes vector picking out every data-write to
+        // PLCA_BURST. The data-write follows two writes after the
+        // address-write that targets MMD_REG_PLCA_BURST: [MMDCTRL_ADDR,
+        // MMDAD<addr>, MMDCTRL_DATA, MMDAD<data>].
+        let mut burst_data_writes = Vec::new();
+        for (i, &(_, reg, val)) in mdio.writes.iter().enumerate() {
+            if reg == regs::REG_MMDAD && val == regs::MMD_REG_PLCA_BURST {
+                // Next MMDAD write after this one is the data write.
+                if let Some(data) = mdio.writes[i + 1..]
+                    .iter()
+                    .find(|w| w.1 == regs::REG_MMDAD)
+                    .map(|w| w.2)
+                {
+                    burst_data_writes.push(data);
+                }
+            }
+        }
+        assert_eq!(
+            burst_data_writes.len(),
+            2,
+            "expected one PLCA_BURST write per configure_plca call"
+        );
+        // First call enabled burst.
+        assert_eq!(
+            burst_data_writes[0], 0x0440,
+            "first call: MAXBC=4, BTMR=0x40"
+        );
+        // Second call MUST land MAXBC=0 on the chip.
+        assert_eq!(
+            burst_data_writes[1] & 0xFF00,
+            0x0000,
+            "second call MUST clear MAXBC to 0"
+        );
     }
 
     #[test]
