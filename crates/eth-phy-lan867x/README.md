@@ -34,6 +34,10 @@ eth-mdio-phy    = "0.1"
 eth-phy-lan867x = "0.1"
 ```
 
+> **Pre-publication note:** the snippet above is the long-term form.
+> The crates are not yet published — until they ship to crates.io,
+> use the path-dep recipe in [Pre-publication](#pre-publication) below.
+
 | Feature | Default | Pulls in |
 | --- | --- | --- |
 | `defmt` | off | `defmt::Format` derives via `eth-mdio-phy/defmt` |

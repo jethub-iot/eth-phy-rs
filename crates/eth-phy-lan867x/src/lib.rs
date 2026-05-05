@@ -181,26 +181,33 @@ impl PhyDriver for PhyLan867x {
         mdio: &mut M,
     ) -> Result<Option<LinkStatus>, PhyError<M::Error>> {
         // On a 10BASE-T1S multidrop bus there is no autonegotiation and
-        // no per-link-partner signal. Two distinct cases:
+        // no per-link-partner signal. Three distinct cases:
         //
-        // - PLCA off (CSMA/CD): the bus is "always there". Report linked
-        //   once init() has succeeded — the caller can attempt to send
-        //   and the chip will handle (possibly colliding) transmissions.
+        // - Driver not yet `init`-ed: report None. The chip has neither
+        //   completed its RESETC handshake nor had `T1SPMACTL.MDE` set,
+        //   so we have no business claiming a working link. Used as the
+        //   gate: `self.chip` is populated only by `init()` and never
+        //   reset, so `chip.is_some()` ≡ "init has succeeded".
+        //
+        // - PLCA off (CSMA/CD), post-init: the bus is "always there".
+        //   Report linked — the caller can attempt to send and the chip
+        //   will handle (possibly colliding) transmissions.
         //
         // - PLCA on: PLCA_STS.PST tracks whether BEACONs are being TX'd
         //   (coordinator) or RX'd (follower). It is the only meaningful
         //   "are we participating in the network" indicator. Report
         //   linked when set; report None until the bus stabilises.
         //
-        // The branch is selected by `self.plca_id`, which `configure_plca`
+        // PLCA mode is selected by `self.plca_id`, which `configure_plca`
         // sets and `disable_plca` / `init` clear. Single-owner contract:
         // this driver is assumed to be the sole writer to the chip's
         // registers, so the driver-side flag is authoritative. If
         // someone else flips `PLCA_CTRL0.EN` directly via MDIO between
         // our `configure_plca` and a `poll_link`, we will not notice.
-        match self.plca_id {
-            None => Ok(Some(LinkStatus::new(Speed::Mbps10, Duplex::Half))),
-            Some(_) => {
+        match (self.chip, self.plca_id) {
+            (None, _) => Ok(None),
+            (Some(_), None) => Ok(Some(LinkStatus::new(Speed::Mbps10, Duplex::Half))),
+            (Some(_), Some(_)) => {
                 let sts = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_PLCA_STS)
                     .map_err(PhyError::Mdio)?;
                 if sts & regs::PLCA_STS_PST != 0 {
@@ -709,10 +716,27 @@ mod tests {
     // ── poll_link tests ────────────────────────────────────────────────
 
     #[test]
-    fn poll_link_plca_disabled_reports_linked() {
-        // No PLCA configured → "always linked" once init done.
+    fn poll_link_before_init_returns_none() {
+        // Pre-init: chip = None ⇒ poll_link must NOT claim a working
+        // link. The reset handshake hasn't run, T1SPMACTL.MDE is at the
+        // chip's power-on default (zero), so there is no link to report.
         let mut mdio = MockMdio::new(vec![]);
         let mut phy = PhyLan867x::new(0);
+        assert!(phy.poll_link(&mut mdio).unwrap().is_none());
+        // No MDIO traffic on the un-init path either.
+        assert!(mdio.writes.is_empty());
+        assert_eq!(mdio.read_idx, 0);
+    }
+
+    #[test]
+    fn poll_link_plca_disabled_reports_linked() {
+        // No PLCA configured → "always linked" once init done. Simulate
+        // the post-init state by seeding `chip` directly so the test
+        // stays focused on the poll_link branch logic without dragging
+        // in the seven-read init sequence.
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671);
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
         // Crucially: no MDIO traffic in the PLCA-off branch.
@@ -724,6 +748,7 @@ mod tests {
     fn poll_link_plca_enabled_pst_set_reports_linked() {
         let mut mdio = MockMdio::new(vec![regs::PLCA_STS_PST]);
         let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671); // simulate post-init state
         phy.plca_id = Some(0); // simulate post-configure_plca state
         let result = phy.poll_link(&mut mdio).unwrap();
         assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
@@ -733,6 +758,7 @@ mod tests {
     fn poll_link_plca_enabled_pst_clear_reports_none() {
         let mut mdio = MockMdio::new(vec![0x0000]); // PST clear
         let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671);
         phy.plca_id = Some(1); // follower waiting for BEACONs
         let result = phy.poll_link(&mut mdio).unwrap();
         assert!(result.is_none());
@@ -742,6 +768,7 @@ mod tests {
     fn poll_link_propagates_mdio_error() {
         let mut mdio = MockMdio::with_failure(vec![], 0);
         let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671);
         phy.plca_id = Some(0); // forces the MDIO path
         let err = phy.poll_link(&mut mdio).unwrap_err();
         assert!(matches!(err, PhyError::Mdio(MockError)));
@@ -1147,6 +1174,7 @@ mod tests {
             0x0000, // PLCA_STS read in poll_link
         ]);
         let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671); // simulate post-init state
         phy.configure_plca(&mut mdio, &PlcaConfig::default())
             .unwrap();
         let result = phy.poll_link(&mut mdio).unwrap();
@@ -1248,6 +1276,7 @@ mod tests {
             regs::PLCA_CTRL0_EN, // pre-RMW PLCA_CTRL0 for disable
         ]);
         let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671); // simulate post-init state
         phy.configure_plca(&mut mdio, &PlcaConfig::default())
             .unwrap();
         phy.disable_plca(&mut mdio).unwrap();
