@@ -65,12 +65,9 @@ pub struct PlcaStatus {
 pub enum PlcaError<E> {
     /// MDIO bus error (passthrough).
     Mdio(E),
-    /// Configuration values are invalid: e.g. `node_id == 0xFF` (silicon
-    /// reserved sentinel for "disabled"), or a follower with `node_id`
-    /// ≥ `node_count` such that no transmit opportunity is ever
-    /// granted.
+    /// Configuration values are invalid: `node_id == 0xFF` (silicon
+    /// reserved sentinel for "disabled"), or a follower with
+    /// `node_id ≥ node_count` such that no transmit opportunity is
+    /// ever granted to this node.
     InvalidConfig,
-    /// `plca_status()` was called before `configure_plca()` (or after
-    /// `disable_plca()`). The driver has no `node_id` to report.
-    NotConfigured,
 }

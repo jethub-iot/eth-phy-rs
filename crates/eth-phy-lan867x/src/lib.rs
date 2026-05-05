@@ -213,6 +213,113 @@ impl PhyDriver for PhyLan867x {
     }
 }
 
+// ── PLCA configuration / introspection (chip-specific, not in PhyDriver) ─
+
+impl PhyLan867x {
+    /// Configure and enable PLCA on this node.
+    ///
+    /// Must be called after [`PhyLan867x::init`] — `init` only puts the
+    /// chip in CSMA/CD multidrop mode, with PLCA off.
+    ///
+    /// Validation:
+    ///
+    /// - `node_id == 0xFF` is rejected (silicon sentinel for "disabled");
+    ///   use [`PhyLan867x::disable_plca`] instead.
+    /// - For followers (`node_id != 0`) with a non-zero `node_count`,
+    ///   `node_id < node_count` must hold; otherwise this node would
+    ///   never be granted a transmit opportunity.
+    pub fn configure_plca<M: MdioBus>(
+        &mut self,
+        mdio: &mut M,
+        config: &PlcaConfig,
+    ) -> Result<(), PlcaError<M::Error>> {
+        if config.node_id == regs::PLCA_ID_DISABLED {
+            return Err(PlcaError::InvalidConfig);
+        }
+        if config.node_count != 0 && config.node_id >= config.node_count {
+            return Err(PlcaError::InvalidConfig);
+        }
+
+        // PLCA_CTRL1 = NCNT[15:8] | ID[7:0]
+        let ctrl1 = (u16::from(config.node_count) << regs::PLCA_CTRL1_NCNT_SHIFT)
+            | u16::from(config.node_id);
+        mmd::mmd_write(
+            mdio,
+            self.addr,
+            regs::MMD_VS2,
+            regs::MMD_REG_PLCA_CTRL1,
+            ctrl1,
+        )
+        .map_err(PlcaError::Mdio)?;
+
+        // Burst mode is opt-in (MAXBC = 0 means single-frame TXOPs).
+        if config.burst_count > 0 {
+            let burst = (u16::from(config.burst_count) << 8) | u16::from(config.burst_timer);
+            mmd::mmd_write(
+                mdio,
+                self.addr,
+                regs::MMD_VS2,
+                regs::MMD_REG_PLCA_BURST,
+                burst,
+            )
+            .map_err(PlcaError::Mdio)?;
+        }
+
+        // Flip the enable bit last, after CTRL1 is in place. RMW preserves
+        // any other bits that future silicon revisions might define.
+        mmd::mmd_rmw(
+            mdio,
+            self.addr,
+            regs::MMD_VS2,
+            regs::MMD_REG_PLCA_CTRL0,
+            0,
+            regs::PLCA_CTRL0_EN,
+        )
+        .map_err(PlcaError::Mdio)?;
+
+        self.plca_id = Some(config.node_id);
+        Ok(())
+    }
+
+    /// Disable PLCA — chip falls back to CSMA/CD on the segment.
+    pub fn disable_plca<M: MdioBus>(&mut self, mdio: &mut M) -> Result<(), PlcaError<M::Error>> {
+        mmd::mmd_rmw(
+            mdio,
+            self.addr,
+            regs::MMD_VS2,
+            regs::MMD_REG_PLCA_CTRL0,
+            regs::PLCA_CTRL0_EN,
+            0,
+        )
+        .map_err(PlcaError::Mdio)?;
+        self.plca_id = None;
+        Ok(())
+    }
+
+    /// Snapshot the chip's PLCA registers.
+    ///
+    /// Returns a chip-truth view: even if `configure_plca` was never
+    /// called on this driver instance (e.g. a different host configured
+    /// the chip earlier), the result reflects what the silicon currently
+    /// reports.
+    pub fn plca_status<M: MdioBus>(&self, mdio: &mut M) -> Result<PlcaStatus, PlcaError<M::Error>> {
+        let ctrl0 = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_PLCA_CTRL0)
+            .map_err(PlcaError::Mdio)?;
+        let ctrl1 = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_PLCA_CTRL1)
+            .map_err(PlcaError::Mdio)?;
+        let sts = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_PLCA_STS)
+            .map_err(PlcaError::Mdio)?;
+
+        let id = (ctrl1 & regs::PLCA_CTRL1_ID_MASK) as u8;
+        Ok(PlcaStatus {
+            enabled: ctrl0 & regs::PLCA_CTRL0_EN != 0,
+            node_id: id,
+            is_coordinator: id == regs::PLCA_ID_COORDINATOR,
+            stable: sts & regs::PLCA_STS_PST != 0,
+        })
+    }
+}
+
 /// LAN867x PHY driver with a hardware reset pin.
 ///
 /// Wraps [`PhyLan867x`] and adds [`hardware_reset`](Self::hardware_reset)
@@ -688,5 +795,289 @@ mod tests {
     fn with_reset_phy_addr_passes_through() {
         let phy = PhyLan867xWithReset::new(5, MockPin::default());
         assert_eq!(phy.phy_addr(), 5);
+    }
+
+    // ── PLCA configure / disable / status tests ────────────────────────
+
+    /// Find the last `MMDAD` data-write — i.e. the value the driver
+    /// pushed to the most recent MMD register access. Used heavily in
+    /// the PLCA tests since each `mmd_write` ends with an MMDAD write
+    /// carrying the data.
+    fn last_mmdad_data_write(mdio: &MockMdio) -> u16 {
+        mdio.writes
+            .iter()
+            .rev()
+            .find(|&&(_, reg, _)| reg == regs::REG_MMDAD)
+            .map(|&(_, _, v)| v)
+            .expect("expected at least one MMDAD data write")
+    }
+
+    /// Find the n-th MMDAD data-write (0-indexed). MMD writes alternate
+    /// "address-write" (whose value is the MMD register address) and
+    /// "data-write" (whose value is the register payload). To
+    /// distinguish, we use the fact that the second write to MMDAD in
+    /// any sequence carries the actual payload.
+    fn mmdad_data_writes(mdio: &MockMdio) -> Vec<u16> {
+        // Sequence per mmd_write call: [MMDCTRL_ADDR, MMDAD_addr,
+        // MMDCTRL_DATA, MMDAD_data]. So every fourth write is a data
+        // write — but only when each MMDCTRL/MMDAD pair belongs to a
+        // single mmd_write. For mmd_rmw we have a read in the middle
+        // (read-then-write), changing the pattern.
+        //
+        // Pragmatic approach: collect every MMDAD write, then keep the
+        // ones whose preceding MMDCTRL.FNCTN = DATA. Since MMDCTRL is
+        // always the one immediately before any MMDAD touch, the test
+        // becomes: walk the writes, track the latest FNCTN, classify
+        // each MMDAD write accordingly.
+        let mut current_fnctn: u16 = 0;
+        let mut data_values = Vec::new();
+        for &(_, reg, val) in &mdio.writes {
+            if reg == regs::REG_MMDCTRL {
+                current_fnctn = val & 0xC000; // top two bits
+            } else if reg == regs::REG_MMDAD && current_fnctn == regs::MMDCTRL_FNCTN_DATA {
+                data_values.push(val);
+            }
+        }
+        data_values
+    }
+
+    #[test]
+    fn configure_plca_coordinator_writes_ctrl1_then_enables() {
+        // Pre-RMW PLCA_CTRL0 read returns 0 (chip default), so the EN
+        // write is exactly PLCA_CTRL0_EN.
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 0,
+                node_count: 8,
+                burst_count: 0,
+                burst_timer: 0,
+            },
+        )
+        .unwrap();
+
+        let writes = mmdad_data_writes(&mdio);
+        // CTRL1 = (8 << 8) | 0 = 0x0800
+        assert_eq!(writes[0], 0x0800, "CTRL1 = NCNT(8) << 8 | ID(0)");
+        // PLCA_CTRL0 RMW final value = EN.
+        assert_eq!(writes[1], regs::PLCA_CTRL0_EN);
+        assert_eq!(phy.plca_id, Some(0));
+    }
+
+    #[test]
+    fn configure_plca_follower_with_burst() {
+        let mut mdio = MockMdio::new(vec![0x0000]); // pre-RMW PLCA_CTRL0
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 3,
+                node_count: 8,
+                burst_count: 2,
+                burst_timer: 0x40,
+            },
+        )
+        .unwrap();
+
+        let writes = mmdad_data_writes(&mdio);
+        // CTRL1 = 0x0803
+        assert_eq!(writes[0], 0x0803);
+        // BURST = (MAXBC << 8) | BTMR = 0x0240
+        assert_eq!(writes[1], 0x0240);
+        // CTRL0 EN.
+        assert_eq!(writes[2], regs::PLCA_CTRL0_EN);
+        assert_eq!(phy.plca_id, Some(3));
+    }
+
+    #[test]
+    fn configure_plca_skips_burst_register_when_burst_count_zero() {
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 1,
+                node_count: 8,
+                burst_count: 0,
+                burst_timer: 0xAA, // ignored when burst disabled
+            },
+        )
+        .unwrap();
+
+        let writes = mmdad_data_writes(&mdio);
+        // Only two data writes: CTRL1 + CTRL0.EN. No burst register.
+        assert_eq!(writes.len(), 2);
+    }
+
+    #[test]
+    fn configure_plca_rejects_id_0xff() {
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan867x::new(0);
+        let err = phy
+            .configure_plca(
+                &mut mdio,
+                &PlcaConfig {
+                    node_id: 0xFF,
+                    node_count: 8,
+                    burst_count: 0,
+                    burst_timer: 0,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, PlcaError::InvalidConfig));
+        // Driver state must not have been touched on rejection.
+        assert_eq!(phy.plca_id, None);
+        // No MDIO traffic on early-rejection path.
+        assert!(mdio.writes.is_empty());
+    }
+
+    #[test]
+    fn configure_plca_rejects_follower_id_at_or_above_count() {
+        // id=8 with count=8 means slot 8 doesn't exist (slots are 0..7).
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan867x::new(0);
+        let err = phy
+            .configure_plca(
+                &mut mdio,
+                &PlcaConfig {
+                    node_id: 8,
+                    node_count: 8,
+                    burst_count: 0,
+                    burst_timer: 0,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, PlcaError::InvalidConfig));
+    }
+
+    #[test]
+    fn configure_plca_allows_follower_with_count_zero() {
+        // Followers may legitimately set NCNT=0 (only the coordinator
+        // strictly cares about that value). configure_plca must not
+        // reject this combination.
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(
+            &mut mdio,
+            &PlcaConfig {
+                node_id: 5,
+                node_count: 0,
+                burst_count: 0,
+                burst_timer: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn configure_plca_writes_ctrl1_before_enable() {
+        // Ordering invariant: PLCA_CTRL1 (NCNT/ID) must be programmed
+        // *before* PLCA_CTRL0.EN flips on. Otherwise the chip would
+        // start operating with stale ID/NCNT for one or more PLCA
+        // cycles.
+        let mut mdio = MockMdio::new(vec![0x0000]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(&mut mdio, &PlcaConfig::default())
+            .unwrap();
+
+        let writes = mmdad_data_writes(&mdio);
+        // PLCA_CTRL0_EN must be the LAST write.
+        assert_eq!(writes.last().copied().unwrap(), regs::PLCA_CTRL0_EN);
+    }
+
+    #[test]
+    fn disable_plca_clears_en_and_internal_state() {
+        // Pre-RMW returns EN set; expect the post-RMW write to clear it.
+        let mut mdio = MockMdio::new(vec![regs::PLCA_CTRL0_EN]);
+        let mut phy = PhyLan867x::new(0);
+        phy.plca_id = Some(2);
+        phy.disable_plca(&mut mdio).unwrap();
+        assert_eq!(last_mmdad_data_write(&mdio), 0);
+        assert_eq!(phy.plca_id, None);
+    }
+
+    #[test]
+    fn plca_status_decodes_chip_state() {
+        // Sequence of three MMD reads: CTRL0 (EN=1), CTRL1 (NCNT=8 ID=3),
+        // STS (PST=1).
+        let mut mdio = MockMdio::new(vec![regs::PLCA_CTRL0_EN, 0x0803, regs::PLCA_STS_PST]);
+        let phy = PhyLan867x::new(0);
+        let s = phy.plca_status(&mut mdio).unwrap();
+        assert_eq!(
+            s,
+            PlcaStatus {
+                enabled: true,
+                node_id: 3,
+                is_coordinator: false,
+                stable: true,
+            }
+        );
+    }
+
+    #[test]
+    fn plca_status_recognises_coordinator() {
+        let mut mdio = MockMdio::new(vec![regs::PLCA_CTRL0_EN, 0x0800, regs::PLCA_STS_PST]);
+        let phy = PhyLan867x::new(0);
+        let s = phy.plca_status(&mut mdio).unwrap();
+        assert!(s.is_coordinator);
+        assert_eq!(s.node_id, 0);
+    }
+
+    #[test]
+    fn plca_status_when_disabled() {
+        // Chip default after init: EN=0, ID=0xFF (silicon power-up
+        // value), PST=0.
+        let mut mdio = MockMdio::new(vec![0x0000, 0x00FF, 0x0000]);
+        let phy = PhyLan867x::new(0);
+        let s = phy.plca_status(&mut mdio).unwrap();
+        assert_eq!(
+            s,
+            PlcaStatus {
+                enabled: false,
+                node_id: 0xFF,
+                is_coordinator: false,
+                stable: false,
+            }
+        );
+    }
+
+    #[test]
+    fn poll_link_after_configure_plca_uses_pst_branch() {
+        // End-to-end: configure_plca records plca_id, then poll_link
+        // must consult PLCA_STS instead of returning the "always linked"
+        // shortcut. PST=0 ⇒ None.
+        let mut mdio = MockMdio::new(vec![
+            0x0000, // pre-RMW PLCA_CTRL0 read
+            0x0000, // PLCA_STS read in poll_link
+        ]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(&mut mdio, &PlcaConfig::default())
+            .unwrap();
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert!(result.is_none(), "PST=0 ⇒ link not yet up");
+    }
+
+    #[test]
+    fn poll_link_after_disable_plca_returns_to_always_linked() {
+        // configure → disable → poll_link must short-circuit to "linked"
+        // again, with no MDIO traffic.
+        let mut mdio = MockMdio::new(vec![
+            0x0000,              // pre-RMW PLCA_CTRL0 for configure
+            regs::PLCA_CTRL0_EN, // pre-RMW PLCA_CTRL0 for disable
+        ]);
+        let mut phy = PhyLan867x::new(0);
+        phy.configure_plca(&mut mdio, &PlcaConfig::default())
+            .unwrap();
+        phy.disable_plca(&mut mdio).unwrap();
+
+        let writes_before = mdio.writes.len();
+        let reads_before = mdio.read_idx;
+        let result = phy.poll_link(&mut mdio).unwrap();
+        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        // No additional MDIO traffic from poll_link.
+        assert_eq!(mdio.writes.len(), writes_before);
+        assert_eq!(mdio.read_idx, reads_before);
     }
 }
