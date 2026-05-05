@@ -63,6 +63,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eth-phy-lan867x"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+ "embedded-hal",
+ "eth-mdio-phy",
+]
+
+[[package]]
 name = "eth-phy-lan87xx"
 version = "0.1.1"
 dependencies = [
