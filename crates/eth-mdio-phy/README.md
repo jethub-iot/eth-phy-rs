@@ -1,9 +1,8 @@
 # eth-mdio-phy
 
-[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
+[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](#license)
 [![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy)
 [![Documentation](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 Trait crate that decouples MDIO bus implementations from the PHYs
 they talk to. `#![no_std]`, no allocations, no platform dependency.
@@ -22,20 +21,6 @@ eth-mdio-phy = "0.1"
 | `defmt` | off | `defmt::Format` derives on `LinkStatus`, `PhyCapabilities`, `PhyError` |
 
 **MSRV: 1.75.** Pure `#![no_std]` — works on any target.
-
-### Pre-publication
-
-> The crate **is not yet on crates.io** (this is the WIP badge). Until
-> it ships, vendor the parent `eth-phy-rs` repository via a git
-> submodule and reference this crate by `path`:
->
-> ```sh
-> git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
-> ```
->
-> ```toml
-> eth-mdio-phy = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
-> ```
 
 ## Compatibility
 

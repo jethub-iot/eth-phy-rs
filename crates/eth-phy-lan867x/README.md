@@ -1,9 +1,8 @@
 # eth-phy-lan867x
 
-[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
+[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](#license)
 [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan867x.svg)](https://crates.io/crates/eth-phy-lan867x)
 [![Documentation](https://docs.rs/eth-phy-lan867x/badge.svg)](https://docs.rs/eth-phy-lan867x)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 `#![no_std]` MDIO driver for the Microchip LAN867x family of
 **10BASE-T1S** Ethernet PHYs (IEEE 802.3cg-2019 Clause 147):
@@ -34,30 +33,11 @@ eth-mdio-phy    = "0.1"
 eth-phy-lan867x = "0.1"
 ```
 
-> **Pre-publication note:** the snippet above is the long-term form.
-> The crates are not yet published — until they ship to crates.io,
-> use the path-dep recipe in [Pre-publication](#pre-publication) below.
-
 | Feature | Default | Pulls in |
 | --- | --- | --- |
 | `defmt` | off | `defmt::Format` derives via `eth-mdio-phy/defmt` |
 
 **MSRV: 1.75.** Pure `#![no_std]`, no allocations. Works on any target.
-
-### Pre-publication
-
-> The crates **are not yet on crates.io** (this is the WIP badge).
-> Until they ship, vendor the parent `eth-phy-rs` repository via a
-> git submodule and reference both crates by `path`:
->
-> ```sh
-> git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
-> ```
->
-> ```toml
-> eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
-> eth-phy-lan867x = { path = "vendor/eth-phy/crates/eth-phy-lan867x" }
-> ```
 
 ## Compatibility
 
