@@ -20,6 +20,16 @@ pub enum PhyError<E> {
         /// The actual PHY ID read from registers.
         id: u32,
     },
+    /// PHY ID matched the expected family, but a chip-specific package
+    /// or variant strap did not. Reported by drivers whose family
+    /// covers more than one silicon SKU and which discriminate the
+    /// concrete part at runtime (e.g. LAN867x via `STRAP_CTRL0.PKGTYP`).
+    UnsupportedPackage {
+        /// Raw strap-register value the driver could not decode,
+        /// zero-extended to 32 bits for forward-compatibility with
+        /// chips that expose wider strap windows.
+        strap: u32,
+    },
 }
 
 impl<E> From<E> for PhyError<E> {

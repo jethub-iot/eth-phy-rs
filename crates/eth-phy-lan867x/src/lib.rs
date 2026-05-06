@@ -155,7 +155,15 @@ impl PhyDriver for PhyLan867x {
             regs::STRAP_CTRL0_PKGTYP_LAN8670 => Chip::Lan8670,
             regs::STRAP_CTRL0_PKGTYP_LAN8671 => Chip::Lan8671,
             regs::STRAP_CTRL0_PKGTYP_LAN8672 => Chip::Lan8672,
-            _ => return Err(PhyError::UnsupportedChip { id }),
+            _ => {
+                // PHY ID matched LAN867x family but PKGTYP is not one
+                // of the three documented packages. Surface the strap
+                // value rather than the PHY ID so the caller doesn't
+                // mistakenly conclude the chip is unsupported.
+                return Err(PhyError::UnsupportedPackage {
+                    strap: u32::from(strap),
+                });
+            }
         };
 
         // 5. Sanity-probe the OPEN Alliance map identifier in MMD-31 —
@@ -583,7 +591,12 @@ mod tests {
         ]);
         let mut phy = PhyLan867x::new(0);
         let err = phy.init(&mut mdio).unwrap_err();
-        assert!(matches!(err, PhyError::UnsupportedChip { .. }));
+        // Distinct from UnsupportedChip: the PHY ID matched correctly,
+        // only the package strap is unrecognised.
+        match err {
+            PhyError::UnsupportedPackage { strap } => assert_eq!(strap, 0x0000),
+            other => panic!("expected UnsupportedPackage, got {other:?}"),
+        }
     }
 
     #[test]
