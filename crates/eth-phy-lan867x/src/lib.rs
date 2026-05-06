@@ -272,6 +272,35 @@ impl PhyLan867x {
     /// - For followers (`node_id != 0`) with a non-zero `node_count`,
     ///   `node_id < node_count` must hold; otherwise this node would
     ///   never be granted a transmit opportunity.
+    ///
+    /// # Failure semantics — NOT transactional
+    ///
+    /// The wire protocol is three sequential MDIO writes — `PLCA_CTRL1`
+    /// (NCNT/ID), `PLCA_BURST` (MAXBC/BTMR), `PLCA_CTRL0.EN` (RMW). An
+    /// MDIO bus error after one of those writes succeeds leaves the
+    /// chip in a partially configured state and the driver-side
+    /// `plca_id` cache out of sync with the silicon:
+    ///
+    /// - Failure of step 1 (CTRL1) or step 2 (BURST): silicon's
+    ///   previous CTRL0.EN is intact, so PLCA continues to run with
+    ///   the previously-configured `node_id`. `plca_id` is unchanged.
+    /// - Failure of step 3 (CTRL0.EN RMW): silicon's CTRL1 and BURST
+    ///   already hold the new values, but EN may carry the previous
+    ///   state. `plca_id` is unchanged. If EN was already 1 from a
+    ///   prior successful configure, PLCA now runs with the **new**
+    ///   CTRL1/BURST while the driver still believes it's running
+    ///   with the **old** ones — `poll_link` will read `PLCA_STS.PST`
+    ///   correctly but any `plca_status()` interpretation that
+    ///   crosses the call boundary may surprise.
+    ///
+    /// Recovery: retry `configure_plca` with the same parameters, or
+    /// call [`PhyLan867x::init`] to reset the chip and the driver
+    /// state together.
+    ///
+    /// A future release may add transactional semantics (write-then-
+    /// readback or rollback-on-error) once the broader 10BASE-T1S +
+    /// PLCA architectural plan in `docs/plans/eth-phy-lan867x-plca.md`
+    /// (in the parent repository) settles the runtime-toggling story.
     pub fn configure_plca<M: MdioBus>(
         &mut self,
         mdio: &mut M,
