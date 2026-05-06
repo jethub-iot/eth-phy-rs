@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/eth-mdio-phy",
     "crates/eth-phy-lan87xx",
+    "crates/eth-phy-lan867x",
 ]
