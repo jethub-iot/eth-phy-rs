@@ -128,7 +128,7 @@ mod tests {
     fn speed_clone_copy() {
         let s = Speed::Mbps100;
         let s2 = s;
-        let s3 = s.clone();
+        let s3 = Clone::clone(&s);
         assert_eq!(s, s2);
         assert_eq!(s, s3);
     }
@@ -137,7 +137,7 @@ mod tests {
     fn duplex_clone_copy() {
         let d = Duplex::Full;
         let d2 = d;
-        let d3 = d.clone();
+        let d3 = Clone::clone(&d);
         assert_eq!(d, d2);
         assert_eq!(d, d3);
     }

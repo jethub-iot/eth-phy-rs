@@ -330,7 +330,7 @@ mod tests {
         // First read after write returns 0 (RESET already cleared)
         let mut mdio = MockMdio::new(vec![0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         // One write (RESET) + one read (poll)
         assert_eq!(mdio.writes.len(), 1);
         assert_eq!(mdio.writes[0], (1, regs::BMCR, bmcr::RESET));
@@ -342,7 +342,7 @@ mod tests {
         // RESET bit set for 3 reads, then cleared on 4th
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET, 0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         assert_eq!(mdio.read_idx, 4);
     }
 
@@ -351,7 +351,7 @@ mod tests {
         // RESET bit never clears — 3 attempts, returns false (timeout)
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET]);
         let result = soft_reset(&mut mdio, 1, 3);
-        assert_eq!(result.unwrap(), false); // timeout indicated, not error
+        assert!(!result.unwrap()); // timeout indicated, not error
         assert_eq!(mdio.read_idx, 3);
     }
 
