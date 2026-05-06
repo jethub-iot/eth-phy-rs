@@ -213,11 +213,8 @@ pub fn force_link<M: MdioBus>(
     status: LinkStatus,
 ) -> Result<(), M::Error> {
     let mut val = mdio.read(phy_addr, regs::BMCR)?;
-    val &= !(bmcr::AN_ENABLE
-        | bmcr::AN_RESTART
-        | bmcr::ISOLATE
-        | bmcr::SPEED_100
-        | bmcr::DUPLEX_FULL);
+    val &=
+        !(bmcr::AN_ENABLE | bmcr::AN_RESTART | bmcr::ISOLATE | bmcr::SPEED_100 | bmcr::DUPLEX_FULL);
     match status.speed {
         Speed::Mbps100 => val |= bmcr::SPEED_100,
         Speed::Mbps10 => {}
