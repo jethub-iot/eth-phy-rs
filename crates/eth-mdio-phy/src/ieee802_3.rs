@@ -163,8 +163,19 @@ pub fn read_phy_id<M: MdioBus>(mdio: &mut M, phy_addr: u8) -> Result<u32, M::Err
 
 /// Read PHY hardware capabilities from BMSR.
 ///
-/// Parses the capability bits in the Basic Mode Status Register and returns
-/// a [`PhyCapabilities`] struct.
+/// Parses the capability bits in the Basic Mode Status Register and
+/// returns a [`PhyCapabilities`] struct.
+///
+/// # `pause` always returns `false`
+///
+/// The IEEE 802.3 Clause 22.2.4.2 BMSR layout has no PAUSE-capability
+/// bit. PAUSE flow-control support is advertised through the
+/// Auto-Negotiation Advertisement Register (`ANAR`, addr 0x04) — see
+/// [`anar`]. Callers that need an authoritative PAUSE capability
+/// must read `ANAR` directly (or wait for the link partner ability
+/// in `ANLPAR`), and merge it with the BMSR-derived speed/duplex
+/// fields manually. Returning `pause = false` here is therefore a
+/// conservative default rather than a measurement.
 pub fn read_capabilities<M: MdioBus>(
     mdio: &mut M,
     phy_addr: u8,
@@ -176,7 +187,7 @@ pub fn read_capabilities<M: MdioBus>(
         speed_10_fd: val & bmsr::T10_FD_CAPABLE != 0,
         speed_10_hd: val & bmsr::T10_HD_CAPABLE != 0,
         auto_negotiation: val & bmsr::AN_ABILITY != 0,
-        pause: false, // BMSR does not have a PAUSE capability bit
+        pause: false, // see rustdoc — PAUSE lives in ANAR/ANLPAR
     })
 }
 

@@ -28,8 +28,15 @@ pub struct PlcaConfig {
     /// Burst-mode max additional packets per transmit opportunity.
     /// `0` = burst disabled (one frame per TXOP — Clause 148 default).
     pub burst_count: u8,
-    /// Burst timer in BT (100 ns units). `0` = leave chip default
-    /// (`0x80` = 128 BT). Only consulted when `burst_count > 0`.
+    /// Burst timer in BT (100 ns units). `0` is a sentinel meaning
+    /// "use the chip default" (`0x80` = 128 BT) — `configure_plca`
+    /// substitutes `0x80` before writing `PLCA_BURST.BTMR`.
+    ///
+    /// Note: the chip's `BTMR` field is always written as part of
+    /// `PLCA_BURST` regardless of `burst_count`. The silicon honours
+    /// `BTMR` only when `MAXBC > 0` (i.e. burst is actually enabled),
+    /// so a non-zero `burst_timer` with `burst_count == 0` is harmless
+    /// — it lands in the register but never gates a TXOP.
     pub burst_timer: u8,
 }
 
