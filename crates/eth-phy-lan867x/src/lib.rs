@@ -281,17 +281,25 @@ impl PhyLan867x {
     /// chip in a partially configured state and the driver-side
     /// `plca_id` cache out of sync with the silicon:
     ///
-    /// - Failure of step 1 (CTRL1) or step 2 (BURST): silicon's
-    ///   previous CTRL0.EN is intact, so PLCA continues to run with
-    ///   the previously-configured `node_id`. `plca_id` is unchanged.
-    /// - Failure of step 3 (CTRL0.EN RMW): silicon's CTRL1 and BURST
-    ///   already hold the new values, but EN may carry the previous
-    ///   state. `plca_id` is unchanged. If EN was already 1 from a
-    ///   prior successful configure, PLCA now runs with the **new**
-    ///   CTRL1/BURST while the driver still believes it's running
-    ///   with the **old** ones — `poll_link` will read `PLCA_STS.PST`
-    ///   correctly but any `plca_status()` interpretation that
-    ///   crosses the call boundary may surprise.
+    /// - **Step 1 (CTRL1) fails:** nothing was written. Silicon
+    ///   keeps its previous `node_id`/`node_count` and prior
+    ///   `CTRL0.EN`; if PLCA was running, it keeps running with
+    ///   the prior parameters. `plca_id` is unchanged.
+    /// - **Step 2 (BURST) fails:** silicon's CTRL1 already holds
+    ///   the *new* `node_id`/`node_count`, but BURST and EN are
+    ///   prior values. If `CTRL0.EN` was already 1 from a prior
+    ///   successful `configure_plca`, PLCA now runs with the **new**
+    ///   `node_id` and **old** burst settings; `plca_id` is still the
+    ///   driver-side cache of the *old* configure call. `plca_status`
+    ///   will report the silicon-truth `node_id` (new), which won't
+    ///   match `plca_id` if the caller has stashed it.
+    /// - **Step 3 (CTRL0.EN RMW) fails:** silicon holds the new CTRL1
+    ///   and BURST; EN still carries the prior state. If EN was 1,
+    ///   PLCA now runs with the **new** CTRL1/BURST while `plca_id`
+    ///   is still the old cache. If EN was 0, PLCA stays disabled.
+    ///   In both cases `poll_link` reads `PLCA_STS.PST` correctly
+    ///   from silicon, but `plca_id` and the chip's actual `node_id`
+    ///   diverge.
     ///
     /// Recovery: retry `configure_plca` with the same parameters, or
     /// call [`PhyLan867x::init`] to reset the chip and the driver
