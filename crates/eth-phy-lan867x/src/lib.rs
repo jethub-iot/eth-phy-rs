@@ -90,13 +90,16 @@ impl PhyDriver for PhyLan867x {
     }
 
     fn init<M: MdioBus>(&mut self, mdio: &mut M) -> Result<(), PhyError<M::Error>> {
-        // 0. Drop cached PLCA state. Soft reset (step 1) wipes the
-        //    chip's PLCA_CTRL0/CTRL1 registers back to defaults, so any
-        //    previous `configure_plca` is undone on the chip — the
-        //    driver's cache must follow. Single-owner contract: this
-        //    driver is the sole writer to the chip's registers, so we
-        //    don't need to read PLCA state back from silicon.
+        // 0. Drop cached driver state. `poll_link` uses `chip.is_some()`
+        //    as the "init has succeeded" gate, so we must not leave a
+        //    stale `Some(_)` from a previous successful init in case
+        //    THIS init fails partway through. Soft reset (step 1) also
+        //    wipes the chip's PLCA_CTRL0/CTRL1 to defaults, so the
+        //    driver's PLCA cache must follow. Single-owner contract:
+        //    this driver is the sole writer to the chip's registers, so
+        //    we don't need to read PLCA state back from silicon.
         self.plca_id = None;
+        self.chip = None;
 
         // 1. Software reset (BMCR.SW_RESET, self-clearing). Bounded poll —
         //    matches the lan87xx driver's allowance.
@@ -140,15 +143,20 @@ impl PhyDriver for PhyLan867x {
         // 4. Discriminate the concrete package from STRAP_CTRL0.PKGTYP.
         //    The strap is latched at hardware reset and survives soft
         //    reset (NASR), so reading it after step 1 is safe.
+        //
+        //    Hold the discovered chip in a local — `self.chip` is only
+        //    written at the very end so that any later step's failure
+        //    leaves the driver in the "uninitialised" state and the
+        //    `poll_link` gate stays honest.
         let strap = mdio
             .read(self.addr, regs::REG_STRAP_CTRL0)
             .map_err(PhyError::Mdio)?;
-        self.chip = Some(match strap & regs::STRAP_CTRL0_PKGTYP_MASK {
+        let chip = match strap & regs::STRAP_CTRL0_PKGTYP_MASK {
             regs::STRAP_CTRL0_PKGTYP_LAN8670 => Chip::Lan8670,
             regs::STRAP_CTRL0_PKGTYP_LAN8671 => Chip::Lan8671,
             regs::STRAP_CTRL0_PKGTYP_LAN8672 => Chip::Lan8672,
             _ => return Err(PhyError::UnsupportedChip { id }),
-        });
+        };
 
         // 5. Sanity-probe the OPEN Alliance map identifier in MMD-31 —
         //    confirms the indirection sequence is functional and that
@@ -172,6 +180,12 @@ impl PhyDriver for PhyLan867x {
             regs::T1SPMACTL_MDE,
         )
         .map_err(PhyError::Mdio)?;
+
+        // 7. Commit. Every fallible step has succeeded; `self.chip =
+        //    Some(_)` from this point onward truthfully signals to
+        //    `poll_link` that the chip is in the post-init multidrop-
+        //    ready state.
+        self.chip = Some(chip);
 
         Ok(())
     }
@@ -371,9 +385,15 @@ impl<P: embedded_hal::digital::OutputPin> PhyLan867xWithReset<P> {
         }
     }
 
-    /// Drive `RESET_N` low for ≥10 ms, then wait 25 ms after release
-    /// before MDIO is touched. Conservative timings — datasheet sec 7.6.4
-    /// allows shorter, but matches the lan87xx wrapper for consistency.
+    /// Drive `RESET_N` low for 10 ms, then wait 25 ms after release
+    /// before MDIO is touched.
+    ///
+    /// The 10 ms low-pulse is conservative — datasheet sec 7.6.4 allows
+    /// shorter — and is intentionally longer than the 2 ms used by
+    /// `eth-phy-lan87xx`'s wrapper, since LAN867x boards (e.g. JXD-CPU-
+    /// E1T1S) drive `RESET_N` from a slow GPIO that may have noticeable
+    /// rise/fall times. The 25 ms post-release delay matches the
+    /// lan87xx wrapper.
     pub fn hardware_reset<D: embedded_hal::delay::DelayNs>(
         &mut self,
         delay: &mut D,
@@ -675,6 +695,89 @@ mod tests {
         let mut phy = PhyLan867x::new(0);
         let err = phy.init(&mut mdio).unwrap_err();
         assert!(matches!(err, PhyError::Mdio(MockError)));
+    }
+
+    #[test]
+    fn init_partial_failure_at_midver_leaves_chip_none() {
+        // The PKGTYP read succeeded (so we know which Chip variant the
+        // package is), but the MIDVER probe returned garbage and init
+        // bailed with UnsupportedChip. The driver MUST NOT leave
+        // `self.chip = Some(...)` from the PKGTYP step — otherwise the
+        // poll_link gate becomes a lie. Pre-seed `chip = Some(...)` to
+        // simulate a prior successful init and confirm the failed
+        // re-init resets it back to None.
+        let mut mdio = MockMdio::new(vec![
+            0x0000,                           // BMCR poll cleared
+            regs::STS2_RESETC,                // STS2 with RESETC
+            PHY_ID0_LAN867X,                  // PHY_ID0
+            PHY_ID1_LAN867X_REV2,             // PHY_ID1
+            regs::STRAP_CTRL0_PKGTYP_LAN8671, // STRAP_CTRL0 → would map to Lan8671
+            0xDEAD,                           // MIDVER — wrong
+        ]);
+        let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8670); // pretend a previous init landed
+        phy.plca_id = Some(5); // and configured PLCA
+        let err = phy.init(&mut mdio).unwrap_err();
+        assert!(matches!(err, PhyError::UnsupportedChip { .. }));
+        assert_eq!(phy.chip, None, "chip must be None after MIDVER failure");
+        assert_eq!(phy.plca_id, None);
+    }
+
+    #[test]
+    fn init_partial_failure_at_mde_rmw_leaves_chip_none() {
+        // Every MDIO call up through MIDVER succeeds, but the very
+        // first write of the T1SPMACTL RMW fails — meaning MDE never
+        // made it to the chip, so the driver isn't in the documented
+        // post-init state. chip must stay None.
+        //
+        // Call layout (read+write count interleaved):
+        //   0  BMCR write (soft_reset begin)
+        //   1  BMCR read  (poll)
+        //   2-5 STS2 indirection: 3 writes + 1 read
+        //   6  PHY_ID0 read
+        //   7  PHY_ID1 read
+        //   8  STRAP_CTRL0 read
+        //   9-12 MIDVER indirection
+        //   13  ← first MMDCTRL write of T1SPMACTL RMW
+        let mut mdio = MockMdio::with_failure(
+            vec![
+                0x0000,                           // BMCR poll
+                regs::STS2_RESETC,                // STS2.RESETC
+                PHY_ID0_LAN867X,                  // PHY_ID0
+                PHY_ID1_LAN867X_REV2,             // PHY_ID1
+                regs::STRAP_CTRL0_PKGTYP_LAN8671, // STRAP_CTRL0
+                regs::MIDVER_EXPECTED,            // MIDVER OK
+            ],
+            13,
+        );
+        let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8672); // simulate prior init state
+        let err = phy.init(&mut mdio).unwrap_err();
+        assert!(matches!(err, PhyError::Mdio(MockError)));
+        assert_eq!(phy.chip, None, "chip must be None after MDE step failure");
+    }
+
+    #[test]
+    fn init_failure_makes_poll_link_report_none() {
+        // End-to-end behavioural invariant: a failed init means
+        // poll_link reports None, not the "always linked" shortcut.
+        // This is the user-visible payoff of the atomic-init
+        // contract.
+        let mut mdio = MockMdio::new(vec![
+            0x0000,
+            regs::STS2_RESETC,
+            PHY_ID0_LAN867X,
+            PHY_ID1_LAN867X_REV2,
+            regs::STRAP_CTRL0_PKGTYP_LAN8671,
+            0xDEAD, // MIDVER bad → init fails
+        ]);
+        let mut phy = PhyLan867x::new(0);
+        phy.chip = Some(Chip::Lan8671); // prior good init
+        let _ = phy.init(&mut mdio); // expected to fail
+                                     // After the failed re-init: poll_link must NOT claim a link.
+        let mut empty_mdio = MockMdio::new(vec![]);
+        let result = phy.poll_link(&mut empty_mdio).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

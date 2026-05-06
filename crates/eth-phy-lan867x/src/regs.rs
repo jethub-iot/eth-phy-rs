@@ -7,7 +7,8 @@
 //! product revision B1). All values are taken directly from the
 //! datasheet — no inferred or guessed encodings.
 //!
-//! The register map is split across four MMD device addresses:
+//! The register map is split across three MMD device addresses
+//! (accessed via the Annex 22D `MMDCTRL` / `MMDAD` indirection):
 //!
 //! - [`MMD_PMA_PMD`] = 1 — PMA / PMD layer
 //! - [`MMD_PCS`]     = 3 — PCS layer
