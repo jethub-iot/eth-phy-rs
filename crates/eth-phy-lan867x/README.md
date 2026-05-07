@@ -29,7 +29,7 @@ via [`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
 
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.1"
+eth-mdio-phy    = "0.2"
 eth-phy-lan867x = "0.1"
 ```
 
@@ -39,12 +39,17 @@ eth-phy-lan867x = "0.1"
 
 **MSRV: 1.75.** Pure `#![no_std]`, no allocations. Works on any target.
 
+> **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
+> `0.2.x`, and vice versa — both digits behave as the major axis
+> below 1.0. Bump explicitly when a new release lands. This crate's
+> first release is `0.1`, but it depends on `eth-mdio-phy 0.2`.
+
 ## Compatibility
 
 | Crate | Version |
 | --- | --- |
-| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.1.x |
-| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.1.x |
+| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.2.x |
+| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.2.x |
 
 ---
 

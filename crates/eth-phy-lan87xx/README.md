@@ -24,8 +24,8 @@ typical case is the ESP32 built-in EMAC SMI controller via
 
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.1"
-eth-phy-lan87xx = "0.1"
+eth-mdio-phy    = "0.2"
+eth-phy-lan87xx = "0.2"
 ```
 
 | Feature | Default | Pulls in |
@@ -35,12 +35,16 @@ eth-phy-lan87xx = "0.1"
 **MSRV: 1.75.** Pure `#![no_std]`. Works on any target — picking the
 target is the MAC layer's problem, not this crate's.
 
+> **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
+> `0.2.x` — both digits behave as the major axis below 1.0. Bump the
+> minor in your manifest explicitly when a new release lands.
+
 ## Compatibility
 
 | Crate | Version |
 | --- | --- |
-| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.1.x |
-| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.1.x |
+| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.2.x |
+| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.2.x |
 
 ---
 

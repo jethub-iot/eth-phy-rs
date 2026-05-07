@@ -13,7 +13,7 @@ they talk to. `#![no_std]`, no allocations, no platform dependency.
 
 ```toml
 [dependencies]
-eth-mdio-phy = "0.1"
+eth-mdio-phy = "0.2"
 ```
 
 | Feature | Default | Pulls in |
@@ -21,6 +21,11 @@ eth-mdio-phy = "0.1"
 | `defmt` | off | `defmt::Format` derives on `LinkStatus`, `PhyCapabilities`, `PhyError` |
 
 **MSRV: 1.75.** Pure `#![no_std]` — works on any target.
+
+> **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
+> `0.2.x` — both digits are treated as the major axis below 1.0.
+> Consumers tracking this crate must bump the minor explicitly when
+> a new minor release lands.
 
 ## Compatibility
 
