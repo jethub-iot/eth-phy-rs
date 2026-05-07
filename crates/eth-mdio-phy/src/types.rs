@@ -4,8 +4,13 @@
 //! Shared types for Ethernet PHY drivers.
 
 /// Ethernet link speed.
+///
+/// Marked `#[non_exhaustive]` so future variants (e.g. `Mbps1000` for
+/// gigabit-capable PHYs) can land as a non-breaking minor release —
+/// downstream `match` expressions are required to keep a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum Speed {
     /// 10 Mbps
     Mbps10,
@@ -14,8 +19,13 @@ pub enum Speed {
 }
 
 /// Ethernet duplex mode.
+///
+/// Marked `#[non_exhaustive]` for symmetry with [`Speed`] — downstream
+/// `match` arms must include a wildcard so a future variant can land
+/// in a minor release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum Duplex {
     /// Half duplex
     Half,
@@ -128,7 +138,7 @@ mod tests {
     fn speed_clone_copy() {
         let s = Speed::Mbps100;
         let s2 = s;
-        let s3 = s.clone();
+        let s3 = Clone::clone(&s);
         assert_eq!(s, s2);
         assert_eq!(s, s3);
     }
@@ -137,7 +147,7 @@ mod tests {
     fn duplex_clone_copy() {
         let d = Duplex::Full;
         let d2 = d;
-        let d3 = d.clone();
+        let d3 = Clone::clone(&d);
         assert_eq!(d, d2);
         assert_eq!(d, d3);
     }

@@ -20,6 +20,16 @@ pub enum PhyError<E> {
         /// The actual PHY ID read from registers.
         id: u32,
     },
+    /// PHY ID matched the expected family, but a chip-specific package
+    /// or variant strap did not. Reported by drivers whose family
+    /// covers more than one silicon SKU and which discriminate the
+    /// concrete part at runtime (e.g. LAN867x via `STRAP_CTRL0.PKGTYP`).
+    UnsupportedPackage {
+        /// Raw strap-register value the driver could not decode,
+        /// zero-extended to 32 bits for forward-compatibility with
+        /// chips that expose wider strap windows.
+        strap: u32,
+    },
 }
 
 impl<E> From<E> for PhyError<E> {
@@ -58,7 +68,18 @@ pub trait PhyDriver {
     fn capabilities<M: MdioBus>(&self, mdio: &mut M)
         -> Result<PhyCapabilities, PhyError<M::Error>>;
 
-    /// Read PHY identifier: `(PHYIDR1 << 16) | PHYIDR2`.
+    /// Read the 32-bit PHY identifier composed of the two ID
+    /// registers at Clause 22 addresses 0x02 and 0x03:
+    /// `(reg_0x02 << 16) | reg_0x03`.
+    ///
+    /// The bit-layout of the result is **chip-family-specific** —
+    /// IEEE 802.3 Clause 22.2.4.3.1 defines OUI/model/revision packing
+    /// for 100BASE-TX (e.g. LAN87xx via `PHYIDR1`/`PHYIDR2`), while
+    /// 10BASE-T1S chips (LAN867x) use the same registers as a flat
+    /// `PHY_ID0`/`PHY_ID1` pair with their own field widths. Drivers
+    /// validate the result against a chip-specific mask; downstream
+    /// consumers should treat it as opaque or consult the relevant
+    /// datasheet.
     fn phy_id<M: MdioBus>(&self, mdio: &mut M) -> Result<u32, PhyError<M::Error>>;
 }
 

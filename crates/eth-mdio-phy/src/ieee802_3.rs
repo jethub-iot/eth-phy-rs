@@ -163,8 +163,19 @@ pub fn read_phy_id<M: MdioBus>(mdio: &mut M, phy_addr: u8) -> Result<u32, M::Err
 
 /// Read PHY hardware capabilities from BMSR.
 ///
-/// Parses the capability bits in the Basic Mode Status Register and returns
-/// a [`PhyCapabilities`] struct.
+/// Parses the capability bits in the Basic Mode Status Register and
+/// returns a [`PhyCapabilities`] struct.
+///
+/// # `pause` always returns `false`
+///
+/// The IEEE 802.3 Clause 22.2.4.2 BMSR layout has no PAUSE-capability
+/// bit. PAUSE flow-control support is advertised through the
+/// Auto-Negotiation Advertisement Register (`ANAR`, addr 0x04) — see
+/// [`anar`]. Callers that need an authoritative PAUSE capability
+/// must read `ANAR` directly (or wait for the link partner ability
+/// in `ANLPAR`), and merge it with the BMSR-derived speed/duplex
+/// fields manually. Returning `pause = false` here is therefore a
+/// conservative default rather than a measurement.
 pub fn read_capabilities<M: MdioBus>(
     mdio: &mut M,
     phy_addr: u8,
@@ -176,21 +187,34 @@ pub fn read_capabilities<M: MdioBus>(
         speed_10_fd: val & bmsr::T10_FD_CAPABLE != 0,
         speed_10_hd: val & bmsr::T10_HD_CAPABLE != 0,
         auto_negotiation: val & bmsr::AN_ABILITY != 0,
-        pause: false, // BMSR does not have a PAUSE capability bit
+        pause: false, // see rustdoc — PAUSE lives in ANAR/ANLPAR
     })
 }
 
 /// Force link speed and duplex (disable auto-negotiation).
 ///
-/// Reads BMCR, clears AN_ENABLE and ISOLATE, sets SPEED_100 and
-/// DUPLEX_FULL according to the requested [`LinkStatus`], then writes back.
+/// Reads BMCR, clears `AN_ENABLE`, `AN_RESTART`, and `ISOLATE`, sets
+/// `SPEED_100` / `DUPLEX_FULL` according to the requested [`LinkStatus`],
+/// then writes back.
+///
+/// Why `AN_RESTART` is cleared explicitly: per IEEE 802.3 Clause
+/// 22.2.4.1.5, `AN_RESTART` is self-clearing on hardware that
+/// initiates the negotiation, but a chip with `AN_ENABLE = 0` is not
+/// running negotiation and so never observes the bit; if the caller
+/// has previously invoked [`enable_auto_negotiation`] (which sets
+/// the bit) and then switches to forced-link, a subsequent
+/// `enable_auto_negotiation` would read back `AN_RESTART = 1` from
+/// BMCR and re-write it as part of the RMW, accidentally short-cutting
+/// its restart cycle. Clearing here keeps the behaviour deterministic
+/// across the two helpers regardless of call order.
 pub fn force_link<M: MdioBus>(
     mdio: &mut M,
     phy_addr: u8,
     status: LinkStatus,
 ) -> Result<(), M::Error> {
     let mut val = mdio.read(phy_addr, regs::BMCR)?;
-    val &= !(bmcr::AN_ENABLE | bmcr::ISOLATE | bmcr::SPEED_100 | bmcr::DUPLEX_FULL);
+    val &=
+        !(bmcr::AN_ENABLE | bmcr::AN_RESTART | bmcr::ISOLATE | bmcr::SPEED_100 | bmcr::DUPLEX_FULL);
     match status.speed {
         Speed::Mbps100 => val |= bmcr::SPEED_100,
         Speed::Mbps10 => {}
@@ -330,7 +354,7 @@ mod tests {
         // First read after write returns 0 (RESET already cleared)
         let mut mdio = MockMdio::new(vec![0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         // One write (RESET) + one read (poll)
         assert_eq!(mdio.writes.len(), 1);
         assert_eq!(mdio.writes[0], (1, regs::BMCR, bmcr::RESET));
@@ -342,7 +366,7 @@ mod tests {
         // RESET bit set for 3 reads, then cleared on 4th
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET, 0x0000]);
         let result = soft_reset(&mut mdio, 1, 10);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         assert_eq!(mdio.read_idx, 4);
     }
 
@@ -351,7 +375,7 @@ mod tests {
         // RESET bit never clears — 3 attempts, returns false (timeout)
         let mut mdio = MockMdio::new(vec![bmcr::RESET, bmcr::RESET, bmcr::RESET]);
         let result = soft_reset(&mut mdio, 1, 3);
-        assert_eq!(result.unwrap(), false); // timeout indicated, not error
+        assert!(!result.unwrap()); // timeout indicated, not error
         assert_eq!(mdio.read_idx, 3);
     }
 
@@ -498,6 +522,22 @@ mod tests {
         force_link(&mut mdio, 1, status).unwrap();
         let written = mdio.writes[0].2;
         assert_ne!(written & bmcr::LOOPBACK, 0, "LOOPBACK should be preserved");
+        assert_ne!(written & bmcr::SPEED_100, 0);
+        assert_ne!(written & bmcr::DUPLEX_FULL, 0);
+    }
+
+    #[test]
+    fn force_link_clears_an_restart() {
+        // BMCR comes back with AN_ENABLE | AN_RESTART set — typical after
+        // a previous enable_auto_negotiation. force_link must drop both
+        // so a subsequent enable_auto_negotiation RMW doesn't re-write
+        // AN_RESTART = 1 and accidentally short-cut its restart cycle.
+        let mut mdio = MockMdio::new(vec![bmcr::AN_ENABLE | bmcr::AN_RESTART]);
+        let status = LinkStatus::new(Speed::Mbps100, Duplex::Full);
+        force_link(&mut mdio, 1, status).unwrap();
+        let written = mdio.writes[0].2;
+        assert_eq!(written & bmcr::AN_ENABLE, 0, "AN_ENABLE must be cleared");
+        assert_eq!(written & bmcr::AN_RESTART, 0, "AN_RESTART must be cleared");
         assert_ne!(written & bmcr::SPEED_100, 0);
         assert_ne!(written & bmcr::DUPLEX_FULL, 0);
     }

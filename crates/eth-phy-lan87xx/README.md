@@ -1,9 +1,8 @@
 # eth-phy-lan87xx
 
-[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](../../LICENSE-APACHE)
+[![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](#license)
 [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx)
 [![Documentation](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 `#![no_std]` MDIO driver for the Microchip LAN87xx family of 10/100
 Ethernet PHYs:
@@ -25,8 +24,8 @@ typical case is the ESP32 built-in EMAC SMI controller via
 
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.1"
-eth-phy-lan87xx = "0.1"
+eth-mdio-phy    = "0.2"
+eth-phy-lan87xx = "0.2"
 ```
 
 | Feature | Default | Pulls in |
@@ -36,27 +35,16 @@ eth-phy-lan87xx = "0.1"
 **MSRV: 1.75.** Pure `#![no_std]`. Works on any target — picking the
 target is the MAC layer's problem, not this crate's.
 
-### Pre-publication
-
-> The crates **are not yet on crates.io** (this is the WIP badge).
-> Until they ship, vendor the parent `eth-phy-rs` repository via a
-> git submodule and reference both crates by `path`:
->
-> ```sh
-> git submodule add https://github.com/jethub-iot/eth-phy-rs.git vendor/eth-phy
-> ```
->
-> ```toml
-> eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
-> eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
-> ```
+> **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
+> `0.2.x` — both digits behave as the major axis below 1.0. Bump the
+> minor in your manifest explicitly when a new release lands.
 
 ## Compatibility
 
 | Crate | Version |
 | --- | --- |
-| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.1.x |
-| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.1.x |
+| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.2.x |
+| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.2.x |
 
 ---
 

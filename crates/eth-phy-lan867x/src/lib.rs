@@ -155,7 +155,15 @@ impl PhyDriver for PhyLan867x {
             regs::STRAP_CTRL0_PKGTYP_LAN8670 => Chip::Lan8670,
             regs::STRAP_CTRL0_PKGTYP_LAN8671 => Chip::Lan8671,
             regs::STRAP_CTRL0_PKGTYP_LAN8672 => Chip::Lan8672,
-            _ => return Err(PhyError::UnsupportedChip { id }),
+            _ => {
+                // PHY ID matched LAN867x family but PKGTYP is not one
+                // of the three documented packages. Surface the strap
+                // value rather than the PHY ID so the caller doesn't
+                // mistakenly conclude the chip is unsupported.
+                return Err(PhyError::UnsupportedPackage {
+                    strap: u32::from(strap),
+                });
+            }
         };
 
         // 5. Sanity-probe the OPEN Alliance map identifier in MMD-31 —
@@ -264,6 +272,43 @@ impl PhyLan867x {
     /// - For followers (`node_id != 0`) with a non-zero `node_count`,
     ///   `node_id < node_count` must hold; otherwise this node would
     ///   never be granted a transmit opportunity.
+    ///
+    /// # Failure semantics — NOT transactional
+    ///
+    /// The wire protocol is three sequential MDIO writes — `PLCA_CTRL1`
+    /// (NCNT/ID), `PLCA_BURST` (MAXBC/BTMR), `PLCA_CTRL0.EN` (RMW). An
+    /// MDIO bus error after one of those writes succeeds leaves the
+    /// chip in a partially configured state and the driver-side
+    /// `plca_id` cache out of sync with the silicon:
+    ///
+    /// - **Step 1 (CTRL1) fails:** nothing was written. Silicon
+    ///   keeps its previous `node_id`/`node_count` and prior
+    ///   `CTRL0.EN`; if PLCA was running, it keeps running with
+    ///   the prior parameters. `plca_id` is unchanged.
+    /// - **Step 2 (BURST) fails:** silicon's CTRL1 already holds
+    ///   the *new* `node_id`/`node_count`, but BURST and EN are
+    ///   prior values. If `CTRL0.EN` was already 1 from a prior
+    ///   successful `configure_plca`, PLCA now runs with the **new**
+    ///   `node_id` and **old** burst settings; `plca_id` is still the
+    ///   driver-side cache of the *old* configure call. `plca_status`
+    ///   will report the silicon-truth `node_id` (new), which won't
+    ///   match `plca_id` if the caller has stashed it.
+    /// - **Step 3 (CTRL0.EN RMW) fails:** silicon holds the new CTRL1
+    ///   and BURST; EN still carries the prior state. If EN was 1,
+    ///   PLCA now runs with the **new** CTRL1/BURST while `plca_id`
+    ///   is still the old cache. If EN was 0, PLCA stays disabled.
+    ///   In both cases `poll_link` reads `PLCA_STS.PST` correctly
+    ///   from silicon, but `plca_id` and the chip's actual `node_id`
+    ///   diverge.
+    ///
+    /// Recovery: retry `configure_plca` with the same parameters, or
+    /// call [`PhyLan867x::init`] to reset the chip and the driver
+    /// state together.
+    ///
+    /// A future release may add transactional semantics (write-then-
+    /// readback or rollback-on-error) once the broader 10BASE-T1S +
+    /// PLCA architectural plan in `docs/plans/eth-phy-lan867x-plca.md`
+    /// (in the parent repository) settles the runtime-toggling story.
     pub fn configure_plca<M: MdioBus>(
         &mut self,
         mdio: &mut M,
@@ -583,7 +628,12 @@ mod tests {
         ]);
         let mut phy = PhyLan867x::new(0);
         let err = phy.init(&mut mdio).unwrap_err();
-        assert!(matches!(err, PhyError::UnsupportedChip { .. }));
+        // Distinct from UnsupportedChip: the PHY ID matched correctly,
+        // only the package strap is unrecognised.
+        match err {
+            PhyError::UnsupportedPackage { strap } => assert_eq!(strap, 0x0000),
+            other => panic!("expected UnsupportedPackage, got {other:?}"),
+        }
     }
 
     #[test]

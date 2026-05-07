@@ -5,16 +5,20 @@ All notable changes to `eth-phy-lan867x` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-05-06
 
-### Fixed
+First public release. Bundled with the rest of the
+`eth-mdio-phy` / `eth-phy-lan87xx` / `esp-emac` v0.2.0 publication
+round.
 
-- `init` now clears the driver's cached PLCA state at the start, so a
+### Fixed (vs the unreleased pre-cuts)
+
+- `init` clears the driver's cached PLCA state at the start, so a
   re-initialisation after a previous `configure_plca` no longer leaves
   `poll_link` querying `PLCA_STS.PST` against a soft-reset chip whose
   PLCA is off (which would have made `poll_link` return `None`
   permanently).
-- `configure_plca` now writes `PLCA_BURST` unconditionally rather than
+- `configure_plca` writes `PLCA_BURST` unconditionally rather than
   only when `burst_count > 0`. A re-configuration with `burst_count = 0`
   reliably clears the chip's `MAXBC`, undoing any prior burst-enabling
   call. Datasheet sec 5.4.18 specifies `MAXBC = 0` as the explicit
@@ -23,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sentinel: `configure_plca` writes the chip default (`0x80`, 12.8 µs)
   for `BTMR` instead of literally `0` (which would make burst mode
   non-functional even when `MAXBC > 0`).
+- `init` step 4 (PKGTYP discrimination) returns the new
+  `PhyError::UnsupportedPackage { strap }` variant instead of
+  `UnsupportedChip { id }` when the package strap is unrecognised —
+  the PHY ID had matched correctly, only the chip-package strap is
+  out of range, and reporting `UnsupportedChip` was misleading.
 
 ### Documentation
 
@@ -30,8 +39,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the driver assumes it is the sole writer to the PHY's registers.
   External writes to `PLCA_CTRL0.EN` between driver calls are not
   observed; call `init` to resync.
+- `configure_plca` rustdoc spells out the non-transactional failure
+  semantics: the three sequential MDIO writes (CTRL1, BURST,
+  CTRL0.EN-RMW) are not atomic, and an MDIO bus error after one of
+  them succeeds leaves the chip and the driver-side `plca_id` cache
+  in inconsistent states. Recovery is `configure_plca` retry or
+  `init()`. A 0.2.0-track architectural plan for transactional
+  semantics lives in the parent project's
+  `docs/plans/eth-phy-lan867x-plca.md`.
+- `PlcaConfig::burst_timer` rustdoc reframes the field: BTMR is
+  always written, the chip itself ignores it when `MAXBC = 0`. The
+  `0` sentinel meaning "use the chip default" is explicit.
 - `plca` module docs no longer claim its consumer methods land "in a
-  follow-up commit" — they shipped in v0.1.0.
+  follow-up commit" — they ship in this release.
+
+### Internal
+
+- Replace the digit-leading keyword `10base-t1s` (which crates.io
+  rejects on upload — keywords must start with an ASCII letter)
+  with `t1s` and `eth-t1s`.
+- Drop the WIP shields.io badge from README, remove the
+  `### Pre-publication` section, and anchor the License badge link
+  on `#license` rather than the relative `../../LICENSE-APACHE`
+  (which does not resolve on the rendered crates.io page).
+- Ship `LICENSE-APACHE` and `LICENSE-GPL` in the crate directory.
 
 ### Added
 
@@ -62,3 +93,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Reference: Microchip DS60001573C (silicon revision 2 = product
 revision B1).
+
+[0.1.0]: https://github.com/jethub-iot/eth-phy-rs/releases/tag/eth-phy-lan867x-v0.1.0
