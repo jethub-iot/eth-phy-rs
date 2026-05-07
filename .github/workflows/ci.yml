@@ -8,7 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # Note: do NOT set `RUSTFLAGS` at workflow scope — the env var fully
+  # overrides `rustflags` in any `.cargo/config.toml` the workspace
+  # ships. We enforce `-D warnings` through clippy's own `-- -D warnings`
+  # and per-job `RUSTDOCFLAGS` for rustdoc.
 
 jobs:
   host:

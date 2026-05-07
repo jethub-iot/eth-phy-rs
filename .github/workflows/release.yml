@@ -30,7 +30,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # See ci.yml — workflow-scope `RUSTFLAGS` would override
+  # `.cargo/config.toml`; clippy's own `-- -D warnings` is sufficient.
 
 jobs:
   verify:
