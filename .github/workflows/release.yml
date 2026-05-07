@@ -1,0 +1,104 @@
+name: Release
+
+# Publishes a single workspace member to crates.io when a GitHub Release is
+# published with a tag of the form `<crate>-v<version>`. The workflow refuses
+# to publish if `Cargo.toml` and the tag disagree on the version, and refuses
+# to re-publish a version that already exists on crates.io (idempotent reruns).
+#
+# Tag → crate mapping:
+#   eth-mdio-phy-v0.2.0    → publishes crates/eth-mdio-phy
+#   eth-phy-lan87xx-v0.2.0 → publishes crates/eth-phy-lan87xx
+#   eth-phy-lan867x-v0.1.0 → publishes crates/eth-phy-lan867x
+#
+# Dependency order matters: `eth-mdio-phy` MUST be published first because the
+# two PHY drivers carry it as a `version = "..."` registry dep alongside their
+# `path = "..."` source dep. Publish releases in the order shown above and
+# wait for the previous workflow run to finish before triggering the next.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve crate + version from tag
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG='${{ github.event.release.tag_name }}'
+          if [[ ! "$TAG" =~ ^([a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
+            echo "::error::Tag '$TAG' does not match '<crate>-v<semver>'"
+            exit 1
+          fi
+          CRATE="${BASH_REMATCH[1]}"
+          VERSION="${BASH_REMATCH[2]}"
+          case "$CRATE" in
+            eth-mdio-phy|eth-phy-lan87xx|eth-phy-lan867x) ;;
+            *) echo "::error::Unknown workspace crate '$CRATE'"; exit 1 ;;
+          esac
+          echo "crate=$CRATE" >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          set -euo pipefail
+          ACTUAL=$(cargo metadata --no-deps --format-version 1 \
+                   | jq -r --arg c '${{ steps.tag.outputs.crate }}' \
+                       '.packages[] | select(.name == $c) | .version')
+          if [ "$ACTUAL" != '${{ steps.tag.outputs.version }}' ]; then
+            echo "::error::Cargo.toml says $ACTUAL, tag says ${{ steps.tag.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Skip if already on crates.io
+        id: check
+        run: |
+          set -euo pipefail
+          CRATE='${{ steps.tag.outputs.crate }}'
+          VERSION='${{ steps.tag.outputs.version }}'
+          # `cargo search` always reports the highest published version, so a
+          # mid-version yank would still match here. Hit the registry index
+          # directly via the sparse HTTP endpoint to enumerate every version.
+          INDEX_PATH=$(printf '%s' "$CRATE" \
+            | awk '{ n=length($0); if (n==1) print "1/"$0;
+                     else if (n==2) print "2/"$0;
+                     else if (n==3) print "3/"substr($0,1,1)"/"$0;
+                     else print substr($0,1,2)"/"substr($0,3,2)"/"$0 }')
+          if curl -fsSL "https://index.crates.io/$INDEX_PATH" 2>/dev/null \
+               | jq -e --arg v "$VERSION" 'select(.vers == $v)' >/dev/null; then
+            echo "$CRATE@$VERSION already published — skipping"
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Dry-run publish
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
+        run: cargo publish -p '${{ steps.tag.outputs.crate }}' --dry-run
+
+      - name: Publish to crates.io
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
+        run: cargo publish -p '${{ steps.tag.outputs.crate }}'
