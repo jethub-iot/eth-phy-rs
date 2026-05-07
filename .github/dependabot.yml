@@ -1,11 +1,39 @@
 version: 2
 updates:
+  # Keep GitHub Actions pinned to up-to-date major versions.
+  # We intentionally track majors only (e.g. @v6) so minor/patch fixes flow
+  # automatically, but we skip major-version bumps since they tend to be
+  # breaking and we want to audit them by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    labels:
+      - dependencies
+      - ci
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Keep cargo dependencies up to date. Group embedded-hal* / embassy-* /
+  # defmt* so their bumps land as one PR each instead of three.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+      - rust
     groups:
       embedded:
         patterns:
@@ -14,10 +42,7 @@ updates:
       defmt:
         patterns:
           - defmt*
-
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+    # Don't auto-bump the MSRV path — rust-version is a semver contract.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

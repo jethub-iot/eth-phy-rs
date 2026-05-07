@@ -1,19 +1,25 @@
 name: Release
 
 # Publishes a single workspace member to crates.io when a GitHub Release is
-# published with a tag of the form `<crate>-v<version>`. The workflow refuses
-# to publish if `Cargo.toml` and the tag disagree on the version, and refuses
-# to re-publish a version that already exists on crates.io (idempotent reruns).
+# published with a tag of the form `<crate>-v<version>`. Refuses to publish
+# if `Cargo.toml` and the tag disagree on the version, and refuses to
+# re-publish a version that is already on crates.io (idempotent reruns).
 #
 # Tag → crate mapping:
 #   eth-mdio-phy-v0.2.0    → publishes crates/eth-mdio-phy
 #   eth-phy-lan87xx-v0.2.0 → publishes crates/eth-phy-lan87xx
 #   eth-phy-lan867x-v0.1.0 → publishes crates/eth-phy-lan867x
 #
-# Dependency order matters: `eth-mdio-phy` MUST be published first because the
-# two PHY drivers carry it as a `version = "..."` registry dep alongside their
-# `path = "..."` source dep. Publish releases in the order shown above and
-# wait for the previous workflow run to finish before triggering the next.
+# Dependency order matters: `eth-mdio-phy` MUST be on crates.io first,
+# because the two PHY drivers carry it as a `version = "..."` registry dep
+# alongside their `path = "..."` source dep. Publish releases in the order
+# above and wait for the previous workflow run to finish before triggering
+# the next.
+#
+# Pipeline:
+#   1. verify         — re-run the full CI matrix as a gate. No green → no publish.
+#   2. verify-version — confirm tag matches Cargo.toml.
+#   3. publish        — sparse-index skip-check, dry-run, then cargo publish.
 
 on:
   release:
@@ -24,21 +30,47 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
-  publish:
-    name: cargo publish
+  verify:
+    name: Verify (re-run CI before publishing)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout the tagged commit
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.release.tag_name }}
-
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: thumbv7em-none-eabihf, riscv32imc-unknown-none-elf
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - name: build for thumbv7em-none-eabihf
+        run: cargo build --workspace --lib --target thumbv7em-none-eabihf
+      - name: build for thumbv7em-none-eabihf (defmt)
+        run: cargo build --workspace --lib --target thumbv7em-none-eabihf --features defmt
+      - name: build for riscv32imc-unknown-none-elf
+        run: cargo build --workspace --lib --target riscv32imc-unknown-none-elf
+      - name: build for riscv32imc-unknown-none-elf (defmt)
+        run: cargo build --workspace --lib --target riscv32imc-unknown-none-elf --features defmt
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  verify-version:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    needs: verify
+    outputs:
+      crate: ${{ steps.tag.outputs.crate }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Resolve crate + version from tag
         id: tag
@@ -58,7 +90,7 @@ jobs:
           echo "crate=$CRATE" >>"$GITHUB_OUTPUT"
           echo "version=$VERSION" >>"$GITHUB_OUTPUT"
 
-      - name: Verify Cargo.toml version matches tag
+      - name: Confirm Cargo.toml agrees
         run: |
           set -euo pipefail
           ACTUAL=$(cargo metadata --no-deps --format-version 1 \
@@ -69,15 +101,26 @@ jobs:
             exit 1
           fi
 
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: [verify, verify-version]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
       - name: Skip if already on crates.io
         id: check
         run: |
           set -euo pipefail
-          CRATE='${{ steps.tag.outputs.crate }}'
-          VERSION='${{ steps.tag.outputs.version }}'
-          # `cargo search` always reports the highest published version, so a
-          # mid-version yank would still match here. Hit the registry index
-          # directly via the sparse HTTP endpoint to enumerate every version.
+          CRATE='${{ needs.verify-version.outputs.crate }}'
+          VERSION='${{ needs.verify-version.outputs.version }}'
+          # Hit the sparse index directly: cargo search only reports the
+          # latest version, so a yank could mask a mid-version that needs
+          # to be left alone.
           INDEX_PATH=$(printf '%s' "$CRATE" \
             | awk '{ n=length($0); if (n==1) print "1/"$0;
                      else if (n==2) print "2/"$0;
@@ -95,10 +138,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
-        run: cargo publish -p '${{ steps.tag.outputs.crate }}' --dry-run
+        run: cargo publish -p '${{ needs.verify-version.outputs.crate }}' --dry-run
 
       - name: Publish to crates.io
         if: steps.check.outputs.skip == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
-        run: cargo publish -p '${{ steps.tag.outputs.crate }}'
+        run: cargo publish -p '${{ needs.verify-version.outputs.crate }}'
