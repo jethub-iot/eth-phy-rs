@@ -53,18 +53,38 @@ jobs:
         run: cargo build --workspace --lib --target thumbv7em-none-eabihf
       - name: build for thumbv7em-none-eabihf (defmt)
         run: cargo build --workspace --lib --target thumbv7em-none-eabihf --features defmt
+      - name: clippy for thumbv7em-none-eabihf
+        run: cargo clippy --workspace --lib --target thumbv7em-none-eabihf -- -D warnings
+      - name: clippy for thumbv7em-none-eabihf (defmt)
+        run: cargo clippy --workspace --lib --target thumbv7em-none-eabihf --features defmt -- -D warnings
       - name: build for riscv32imc-unknown-none-elf
         run: cargo build --workspace --lib --target riscv32imc-unknown-none-elf
       - name: build for riscv32imc-unknown-none-elf (defmt)
         run: cargo build --workspace --lib --target riscv32imc-unknown-none-elf --features defmt
+      - name: clippy for riscv32imc-unknown-none-elf
+        run: cargo clippy --workspace --lib --target riscv32imc-unknown-none-elf -- -D warnings
+      - name: clippy for riscv32imc-unknown-none-elf (defmt)
+        run: cargo clippy --workspace --lib --target riscv32imc-unknown-none-elf --features defmt -- -D warnings
       - run: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  verify-msrv:
+    name: Verify MSRV 1.75 still builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: dtolnay/rust-toolchain@1.75.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --lib
+      - run: cargo build --workspace --lib --features defmt
+
   verify-version:
     name: Verify tag matches Cargo.toml
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, verify-msrv]
     outputs:
       crate: ${{ steps.tag.outputs.crate }}
       version: ${{ steps.tag.outputs.version }}
@@ -73,12 +93,22 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
+      # `cargo metadata` is pre-installed on ubuntu-latest images, but
+      # we install a stable toolchain explicitly for reproducibility —
+      # otherwise this job depends on whatever Rust version Microsoft
+      # ships in the runner snapshot.
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Resolve crate + version from tag
         id: tag
         run: |
           set -euo pipefail
           TAG='${{ github.event.release.tag_name }}'
-          if [[ ! "$TAG" =~ ^([a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
+          # Full SemVer 2.0.0 grammar: optional `-prerelease` and optional
+          # `+build` metadata. cargo strips build metadata from the on-
+          # registry version, but we let it pass the regex so a tagger
+          # can use `eth-mdio-phy-v0.2.0+ci.42` for traceability.
+          if [[ ! "$TAG" =~ ^([a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?)$ ]]; then
             echo "::error::Tag '$TAG' does not match '<crate>-v<semver>'"
             exit 1
           fi
@@ -105,7 +135,7 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: [verify, verify-version]
+    needs: [verify, verify-msrv, verify-version]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -135,10 +165,13 @@ jobs:
             echo "skip=false" >>"$GITHUB_OUTPUT"
           fi
 
+      # `cargo publish --dry-run` packages and verifies against the
+      # registry's read API, but never authenticates — so we don't pass
+      # `CARGO_REGISTRY_TOKEN` here. Keeping the token off this step
+      # narrows the secret's blast radius (one less point at which a
+      # malicious build script could exfiltrate it).
       - name: Dry-run publish
         if: steps.check.outputs.skip == 'false'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
         run: cargo publish -p '${{ needs.verify-version.outputs.crate }}' --dry-run
 
       - name: Publish to crates.io

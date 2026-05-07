@@ -54,6 +54,8 @@ jobs:
         run: cargo build --workspace --lib --target thumbv7em-none-eabihf --features defmt
       - name: clippy workspace lib
         run: cargo clippy --workspace --lib --target thumbv7em-none-eabihf -- -D warnings
+      - name: clippy workspace lib (defmt)
+        run: cargo clippy --workspace --lib --target thumbv7em-none-eabihf --features defmt -- -D warnings
 
   embedded-riscv32:
     name: Build for riscv32imc-unknown-none-elf (ESP32-C/H, RP2350)
@@ -71,6 +73,8 @@ jobs:
         run: cargo build --workspace --lib --target riscv32imc-unknown-none-elf --features defmt
       - name: clippy workspace lib
         run: cargo clippy --workspace --lib --target riscv32imc-unknown-none-elf -- -D warnings
+      - name: clippy workspace lib (defmt)
+        run: cargo clippy --workspace --lib --target riscv32imc-unknown-none-elf --features defmt -- -D warnings
 
   msrv:
     name: MSRV 1.75
