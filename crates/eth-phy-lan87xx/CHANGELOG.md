@@ -5,6 +5,14 @@ All notable changes to `eth-phy-lan87xx` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Add `PhyLan87xx::set_loopback(on: bool)` API for MII loopback testing
+  (delegating wrapper on `PhyLan87xxWithReset`). Asymmetric semantics:
+  ON path overwrites BMCR with `LOOPBACK | SPEED_100 | DUPLEX_FULL` to
+  bypass auto-negotiation; OFF path is a read-modify-write that clears
+  only bit 14 and preserves remaining BMCR state.
+
 ## [0.2.0] - 2026-05-06
 
 ### Breaking

@@ -90,6 +90,75 @@ impl PhyLan87xx {
             _ => None,
         }
     }
+
+    /// Enable or disable MII loopback per IEEE 802.3 Clause 22 (BMCR bit 14).
+    ///
+    /// **MUST be called after [`PhyDriver::init`] completes.** `init`
+    /// ends with `enable_auto_negotiation`, which writes BMCR — calling
+    /// `set_loopback(true)` before `init` would be overwritten.
+    ///
+    /// # Behaviour
+    ///
+    /// The on/off paths are intentionally asymmetric:
+    ///
+    /// - **`on = true`**: full overwrite of BMCR with
+    ///   `LOOPBACK | SPEED_100 | DUPLEX_FULL` (0x6100). Auto-negotiation
+    ///   is bypassed deliberately — MII loopback skips PMD link
+    ///   establishment, so advertising over the wire is pointless and
+    ///   leaving `AN_ENABLE` set would cause the PHY to fight the
+    ///   loopback configuration during the next negotiation cycle.
+    /// - **`on = false`**: read-modify-write that clears only bit 14,
+    ///   preserving all other BMCR settings. Whatever the BMCR held
+    ///   before the call (forced link, isolate, etc.) keeps its state.
+    ///   Note that calling this after a `set_loopback(true)` does **not**
+    ///   restore auto-negotiation — the caller must re-run
+    ///   [`PhyDriver::init`] or invoke
+    ///   `eth_mdio_phy::ieee802_3::enable_auto_negotiation` to bring the
+    ///   PHY back to a negotiated link.
+    ///
+    /// # Caveats
+    ///
+    /// - `BMSR.LINK_STATUS` may clamp to 0 in loopback on some LAN8720A
+    ///   silicon revisions; callers must NOT gate on
+    ///   [`PhyDriver::poll_link`] while loopback is on.
+    /// - MII loopback loops at the digital MII layer (LAN8720A datasheet
+    ///   rev D §3.5.1). The RMII REF_CLK (50 MHz) is still required
+    ///   externally — disabling the external clock source breaks the
+    ///   loopback path.
+    pub fn set_loopback<M: MdioBus>(
+        &mut self,
+        mdio: &mut M,
+        on: bool,
+    ) -> Result<(), PhyError<M::Error>> {
+        if on {
+            // Full overwrite: loopback bypasses auto-negotiation, so
+            // pin speed/duplex deterministically and clear AN_ENABLE
+            // along with every other BMCR bit in a single write.
+            let value = ieee802_3::bmcr::LOOPBACK
+                | ieee802_3::bmcr::SPEED_100
+                | ieee802_3::bmcr::DUPLEX_FULL;
+            mdio.write(self.addr, ieee802_3::regs::BMCR, value)
+                .map_err(PhyError::Mdio)?;
+            // Loopback short-circuits the link reporting path on some
+            // LAN8720A silicon — invalidate cached link state so the
+            // next caller-driven poll starts from "unknown".
+            self.link_up = false;
+        } else {
+            // RMW clear of bit 14: preserve every other BMCR bit so
+            // callers can layer loopback on top of forced-link, isolate,
+            // or a manually-staged auto-neg restart without surprises.
+            let cur = mdio
+                .read(self.addr, ieee802_3::regs::BMCR)
+                .map_err(PhyError::Mdio)?;
+            mdio.write(
+                self.addr,
+                ieee802_3::regs::BMCR,
+                cur & !ieee802_3::bmcr::LOOPBACK,
+            )
+            .map_err(PhyError::Mdio)?;
+        }
+        Ok(())
+    }
 }
 
 impl PhyDriver for PhyLan87xx {
@@ -242,6 +311,18 @@ impl<P: embedded_hal::digital::OutputPin> PhyLan87xxWithReset<P> {
         self.reset_pin.set_high()?;
         delay.delay_ms(25);
         Ok(())
+    }
+
+    /// Enable or disable MII loopback. Delegates to
+    /// [`PhyLan87xx::set_loopback`] — see that method for the full
+    /// contract (asymmetric on/off semantics, must follow `init`,
+    /// LAN8720A-specific caveats).
+    pub fn set_loopback<M: MdioBus>(
+        &mut self,
+        mdio: &mut M,
+        on: bool,
+    ) -> Result<(), PhyError<M::Error>> {
+        self.inner.set_loopback(mdio, on)
     }
 }
 
@@ -697,6 +778,134 @@ mod tests {
         let phy = PhyLan87xx::new(1);
         let id = phy.phy_id(&mut mdio).unwrap();
         assert_eq!(id, 0x0007_C0F0);
+    }
+
+    // ── set_loopback tests ─────────────────────────────────────────────
+
+    #[test]
+    fn set_loopback_on_writes_full_bmcr_overwrite() {
+        // ON path: single write, full BMCR value, no preceding read.
+        // Value must be LOOPBACK | SPEED_100 | DUPLEX_FULL = 0x6100.
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.set_loopback(&mut mdio, true).unwrap();
+
+        assert_eq!(
+            mdio.writes.len(),
+            1,
+            "set_loopback(true) must issue exactly one BMCR write"
+        );
+        let (phy_addr, reg_addr, value) = mdio.writes[0];
+        assert_eq!(phy_addr, 1, "must target the configured PHY address");
+        assert_eq!(reg_addr, ieee802_3::regs::BMCR, "must target BMCR");
+        assert_eq!(
+            value, 0x6100,
+            "BMCR overwrite must equal LOOPBACK | SPEED_100 | DUPLEX_FULL (0x6100), got 0x{value:04x}"
+        );
+        // Sanity: decompose the literal so a future bit-rename surfaces here.
+        assert_eq!(
+            value,
+            bmcr::LOOPBACK | bmcr::SPEED_100 | bmcr::DUPLEX_FULL,
+            "BMCR overwrite bit composition drifted from spec"
+        );
+        // Auto-negotiation must NOT be enabled in the loopback BMCR —
+        // leaving AN_ENABLE on would have the PHY fight loopback at the
+        // next negotiation tick.
+        assert_eq!(
+            value & bmcr::AN_ENABLE,
+            0,
+            "AN_ENABLE must be cleared by the full BMCR overwrite"
+        );
+    }
+
+    #[test]
+    fn set_loopback_off_rmw_preserves_other_bits() {
+        // OFF path: read BMCR, write back with bit 14 cleared, every
+        // other bit preserved. Seed BMCR with an arbitrary non-loopback
+        // value (0x3000 = AN_ENABLE | POWER_DOWN) so we can prove the
+        // mask is exactly !LOOPBACK and nothing wider.
+        let initial: u16 = 0x3000;
+        let mut mdio = MockMdio::new(vec![initial]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.set_loopback(&mut mdio, false).unwrap();
+
+        assert_eq!(
+            mdio.writes.len(),
+            1,
+            "set_loopback(false) must issue exactly one BMCR write"
+        );
+        let (phy_addr, reg_addr, value) = mdio.writes[0];
+        assert_eq!(phy_addr, 1);
+        assert_eq!(reg_addr, ieee802_3::regs::BMCR);
+        assert_eq!(
+            value,
+            initial & !bmcr::LOOPBACK,
+            "OFF must clear only bit 14; expected 0x{:04x}, got 0x{:04x}",
+            initial & !bmcr::LOOPBACK,
+            value
+        );
+    }
+
+    #[test]
+    fn set_loopback_off_clears_existing_loopback_bit() {
+        // BMCR already has LOOPBACK set alongside other state — the OFF
+        // path must clear bit 14 while leaving the rest intact.
+        let initial: u16 = bmcr::LOOPBACK | bmcr::SPEED_100 | bmcr::DUPLEX_FULL;
+        let mut mdio = MockMdio::new(vec![initial]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.set_loopback(&mut mdio, false).unwrap();
+
+        let (_, _, value) = mdio.writes[0];
+        assert_eq!(value & bmcr::LOOPBACK, 0, "LOOPBACK must be cleared");
+        assert_ne!(
+            value & bmcr::SPEED_100,
+            0,
+            "SPEED_100 must be preserved across the RMW"
+        );
+        assert_ne!(
+            value & bmcr::DUPLEX_FULL,
+            0,
+            "DUPLEX_FULL must be preserved across the RMW"
+        );
+    }
+
+    #[test]
+    fn set_loopback_on_invalidates_cached_link() {
+        // Pretend a prior poll_link reported the link as up, then
+        // entering loopback must reset that flag — BMSR.LINK_STATUS is
+        // not trustworthy in loopback on some LAN8720A silicon.
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan87xx::new(1);
+        phy.link_up = true;
+        phy.set_loopback(&mut mdio, true).unwrap();
+        assert!(
+            !phy.link_up,
+            "set_loopback(true) must invalidate the cached link-up flag"
+        );
+    }
+
+    #[test]
+    fn set_loopback_on_mdio_error_propagates() {
+        // Fail on the first call (the BMCR write).
+        let mut mdio = MockMdio::with_failure(vec![], 0);
+        let mut phy = PhyLan87xx::new(1);
+        let err = phy.set_loopback(&mut mdio, true).unwrap_err();
+        match err {
+            PhyError::Mdio(MockError) => {}
+            _ => panic!("expected Mdio error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn set_loopback_off_mdio_error_propagates_on_read() {
+        // Fail on the first call (the BMCR read).
+        let mut mdio = MockMdio::with_failure(vec![], 0);
+        let mut phy = PhyLan87xx::new(1);
+        let err = phy.set_loopback(&mut mdio, false).unwrap_err();
+        match err {
+            PhyError::Mdio(MockError) => {}
+            _ => panic!("expected Mdio error, got {:?}", err),
+        }
     }
 
     // ── parse_pscsr tests ──────────────────────────────────────────────
