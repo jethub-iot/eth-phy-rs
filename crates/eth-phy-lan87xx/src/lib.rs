@@ -822,8 +822,8 @@ mod tests {
     fn set_loopback_off_rmw_preserves_other_bits() {
         // OFF path: read BMCR, write back with bit 14 cleared, every
         // other bit preserved. Seed BMCR with an arbitrary non-loopback
-        // value (0x3000 = AN_ENABLE | POWER_DOWN) so we can prove the
-        // mask is exactly !LOOPBACK and nothing wider.
+        // value (0x3000 = bits 13+12 = SPEED_SELECT_100 | AN_ENABLE) so
+        // we can prove the mask is exactly !LOOPBACK and nothing wider.
         let initial: u16 = 0x3000;
         let mut mdio = MockMdio::new(vec![initial]);
         let mut phy = PhyLan87xx::new(1);
@@ -920,6 +920,44 @@ mod tests {
             PhyError::Mdio(MockError) => {}
             _ => panic!("expected Mdio error, got {:?}", err),
         }
+    }
+
+    #[test]
+    fn wrapped_set_loopback_delegates_to_inner() {
+        // `PhyLan87xxWithReset` forwards `set_loopback` to the inner
+        // `PhyLan87xx`. Verify the forwarding actually reaches the
+        // inner implementation by observing the BMCR overwrite the
+        // ON-path is guaranteed to issue.
+        struct NoopPin;
+        impl embedded_hal::digital::ErrorType for NoopPin {
+            type Error = core::convert::Infallible;
+        }
+        impl embedded_hal::digital::OutputPin for NoopPin {
+            fn set_low(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn set_high(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+        }
+
+        let mut mdio = MockMdio::new(vec![]);
+        let mut phy = PhyLan87xxWithReset::new(1, NoopPin);
+        phy.set_loopback(&mut mdio, true).unwrap();
+
+        assert_eq!(
+            mdio.writes.len(),
+            1,
+            "delegated set_loopback(true) must issue exactly one BMCR write"
+        );
+        let (addr, reg, value) = mdio.writes[0];
+        assert_eq!(addr, 1, "phy address must propagate");
+        assert_eq!(reg, ieee802_3::regs::BMCR, "must target BMCR");
+        assert_eq!(
+            value,
+            bmcr::LOOPBACK | bmcr::SPEED_100 | bmcr::DUPLEX_FULL,
+            "full BMCR overwrite value must match inner contract"
+        );
     }
 
     // ── parse_pscsr tests ──────────────────────────────────────────────
