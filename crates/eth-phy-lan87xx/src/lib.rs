@@ -908,6 +908,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn set_loopback_off_mdio_error_propagates_on_write() {
+        // Read succeeds (returns 0x3000), then write (call 1) fails.
+        // Guards against an accidental drop of `?` on the write half of
+        // the RMW path in future refactors.
+        let mut mdio = MockMdio::with_failure(vec![0x3000], 1);
+        let mut phy = PhyLan87xx::new(1);
+        let err = phy.set_loopback(&mut mdio, false).unwrap_err();
+        match err {
+            PhyError::Mdio(MockError) => {}
+            _ => panic!("expected Mdio error, got {:?}", err),
+        }
+    }
+
     // ── parse_pscsr tests ──────────────────────────────────────────────
 
     #[test]
