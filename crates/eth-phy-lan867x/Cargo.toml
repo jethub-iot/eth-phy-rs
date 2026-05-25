@@ -1,6 +1,6 @@
 [package]
 name          = "eth-phy-lan867x"
-version       = "0.1.0"
+version       = "0.2.0"
 edition       = "2021"
 rust-version  = "1.75"
 authors       = ["Viacheslav Bocharov <v@baodeep.com>", "JetHome (r)"]
@@ -17,7 +17,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-eth-mdio-phy = { version = "0.2.0", path = "../eth-mdio-phy" }
+eth-mdio-phy = { version = "0.3.0", path = "../eth-mdio-phy" }
 embedded-hal = "1.0"
 defmt        = { version = "0.3", optional = true }
 

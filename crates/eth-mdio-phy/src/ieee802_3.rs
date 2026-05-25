@@ -10,7 +10,7 @@
 //!   auto-negotiation, ID read, capability query, forced link)
 
 use crate::mdio::MdioBus;
-use crate::types::{Duplex, LinkStatus, PhyCapabilities, Speed};
+use crate::types::{Duplex, PhyCapabilities, Speed};
 
 /// IEEE 802.3 Clause 22 standard register addresses (0-6).
 pub mod regs {
@@ -194,8 +194,8 @@ pub fn read_capabilities<M: MdioBus>(
 /// Force link speed and duplex (disable auto-negotiation).
 ///
 /// Reads BMCR, clears `AN_ENABLE`, `AN_RESTART`, and `ISOLATE`, sets
-/// `SPEED_100` / `DUPLEX_FULL` according to the requested [`LinkStatus`],
-/// then writes back.
+/// `SPEED_100` / `DUPLEX_FULL` according to the requested `speed` /
+/// `duplex`, then writes back.
 ///
 /// Why `AN_RESTART` is cleared explicitly: per IEEE 802.3 Clause
 /// 22.2.4.1.5, `AN_RESTART` is self-clearing on hardware that
@@ -210,16 +210,17 @@ pub fn read_capabilities<M: MdioBus>(
 pub fn force_link<M: MdioBus>(
     mdio: &mut M,
     phy_addr: u8,
-    status: LinkStatus,
+    speed: Speed,
+    duplex: Duplex,
 ) -> Result<(), M::Error> {
     let mut val = mdio.read(phy_addr, regs::BMCR)?;
     val &=
         !(bmcr::AN_ENABLE | bmcr::AN_RESTART | bmcr::ISOLATE | bmcr::SPEED_100 | bmcr::DUPLEX_FULL);
-    match status.speed {
-        Speed::Mbps100 => val |= bmcr::SPEED_100,
-        Speed::Mbps10 => {}
+    match speed {
+        Speed::_100M => val |= bmcr::SPEED_100,
+        Speed::_10M => {}
     }
-    match status.duplex {
+    match duplex {
         Duplex::Full => val |= bmcr::DUPLEX_FULL,
         Duplex::Half => {}
     }
@@ -495,8 +496,7 @@ mod tests {
     #[test]
     fn force_link_100_full() {
         let mut mdio = MockMdio::new(vec![0x0000]);
-        let status = LinkStatus::new(Speed::Mbps100, Duplex::Full);
-        force_link(&mut mdio, 1, status).unwrap();
+        force_link(&mut mdio, 1, Speed::_100M, Duplex::Full).unwrap();
         let written = mdio.writes[0].2;
         assert_ne!(written & bmcr::SPEED_100, 0);
         assert_ne!(written & bmcr::DUPLEX_FULL, 0);
@@ -506,8 +506,7 @@ mod tests {
     #[test]
     fn force_link_10_half() {
         let mut mdio = MockMdio::new(vec![0x0000]);
-        let status = LinkStatus::new(Speed::Mbps10, Duplex::Half);
-        force_link(&mut mdio, 1, status).unwrap();
+        force_link(&mut mdio, 1, Speed::_10M, Duplex::Half).unwrap();
         let written = mdio.writes[0].2;
         assert_eq!(written & bmcr::SPEED_100, 0);
         assert_eq!(written & bmcr::DUPLEX_FULL, 0);
@@ -518,8 +517,7 @@ mod tests {
     fn force_link_preserves_other_bits() {
         // Start with LOOPBACK set; it should survive force_link
         let mut mdio = MockMdio::new(vec![bmcr::LOOPBACK]);
-        let status = LinkStatus::new(Speed::Mbps100, Duplex::Full);
-        force_link(&mut mdio, 1, status).unwrap();
+        force_link(&mut mdio, 1, Speed::_100M, Duplex::Full).unwrap();
         let written = mdio.writes[0].2;
         assert_ne!(written & bmcr::LOOPBACK, 0, "LOOPBACK should be preserved");
         assert_ne!(written & bmcr::SPEED_100, 0);
@@ -533,8 +531,7 @@ mod tests {
         // so a subsequent enable_auto_negotiation RMW doesn't re-write
         // AN_RESTART = 1 and accidentally short-cut its restart cycle.
         let mut mdio = MockMdio::new(vec![bmcr::AN_ENABLE | bmcr::AN_RESTART]);
-        let status = LinkStatus::new(Speed::Mbps100, Duplex::Full);
-        force_link(&mut mdio, 1, status).unwrap();
+        force_link(&mut mdio, 1, Speed::_100M, Duplex::Full).unwrap();
         let written = mdio.writes[0].2;
         assert_eq!(written & bmcr::AN_ENABLE, 0, "AN_ENABLE must be cleared");
         assert_eq!(written & bmcr::AN_RESTART, 0, "AN_RESTART must be cleared");

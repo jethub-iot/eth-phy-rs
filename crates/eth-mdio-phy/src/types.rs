@@ -2,20 +2,27 @@
 // Copyright (c) Viacheslav Bocharov <v@baodeep.com> and JetHome (r)
 
 //! Shared types for Ethernet PHY drivers.
+//!
+//! The names ([`Speed`], [`Duplex`], [`LinkState`]) and variant
+//! identifiers (`Speed::_10M`, `Speed::_100M`) intentionally mirror
+//! the upstream `esp_hal::ethernet::mac` shape so the bridge between
+//! a [`PhyDriver`](crate::PhyDriver) implementation and an
+//! `esp_hal::ethernet::phy::Phy` adapter is a near-identity
+//! transform — no field-by-field rebuild on the hot path.
 
 /// Ethernet link speed.
 ///
-/// Marked `#[non_exhaustive]` so future variants (e.g. `Mbps1000` for
+/// Marked `#[non_exhaustive]` so future variants (e.g. `_1000M` for
 /// gigabit-capable PHYs) can land as a non-breaking minor release —
 /// downstream `match` expressions are required to keep a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Speed {
-    /// 10 Mbps
-    Mbps10,
-    /// 100 Mbps
-    Mbps100,
+    /// 10 Mbit/s
+    _10M,
+    /// 100 Mbit/s
+    _100M,
 }
 
 /// Ethernet duplex mode.
@@ -33,20 +40,45 @@ pub enum Duplex {
     Full,
 }
 
-/// Negotiated or configured link parameters.
+/// Negotiated link state reported by the PHY.
+///
+/// Shape matches `esp_hal::ethernet::mac::LinkState`; the `up` flag
+/// signals whether a carrier is present. When `up == false` the
+/// `speed` and `duplex` fields are unspecified — they may hold the
+/// last known good values or any default the driver chose. Callers
+/// must check `up` before acting on the negotiated parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct LinkStatus {
-    /// Link speed
+pub struct LinkState {
+    /// Whether the link is currently established (carrier present).
+    pub up: bool,
+    /// Negotiated link speed. Valid only when `up == true`.
     pub speed: Speed,
-    /// Duplex mode
+    /// Negotiated duplex mode. Valid only when `up == true`.
     pub duplex: Duplex,
 }
 
-impl LinkStatus {
-    /// Create a new link status.
-    pub const fn new(speed: Speed, duplex: Duplex) -> Self {
-        Self { speed, duplex }
+impl LinkState {
+    /// Construct a `LinkState` reporting the link as down. The
+    /// `speed` / `duplex` fields are set to a deterministic default
+    /// (`Speed::_100M`, `Duplex::Full`) so the value compares equal
+    /// across calls; callers must not act on those fields while
+    /// `up == false`.
+    pub const fn down() -> Self {
+        Self {
+            up: false,
+            speed: Speed::_100M,
+            duplex: Duplex::Full,
+        }
+    }
+
+    /// Construct an "up" `LinkState` with the given parameters.
+    pub const fn up(speed: Speed, duplex: Duplex) -> Self {
+        Self {
+            up: true,
+            speed,
+            duplex,
+        }
     }
 }
 
@@ -76,28 +108,37 @@ mod tests {
     use alloc::format;
 
     #[test]
-    fn link_status_new() {
-        let ls = LinkStatus::new(Speed::Mbps100, Duplex::Full);
-        assert_eq!(ls.speed, Speed::Mbps100);
+    fn link_state_up_constructor() {
+        let ls = LinkState::up(Speed::_100M, Duplex::Full);
+        assert!(ls.up);
+        assert_eq!(ls.speed, Speed::_100M);
         assert_eq!(ls.duplex, Duplex::Full);
     }
 
     #[test]
-    fn link_status_equality() {
-        let a = LinkStatus::new(Speed::Mbps10, Duplex::Half);
-        let b = LinkStatus::new(Speed::Mbps10, Duplex::Half);
-        let c = LinkStatus::new(Speed::Mbps100, Duplex::Full);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn link_state_down_constructor() {
+        let ls = LinkState::down();
+        assert!(!ls.up);
     }
 
     #[test]
-    fn link_status_all_combinations() {
+    fn link_state_equality() {
+        let a = LinkState::up(Speed::_10M, Duplex::Half);
+        let b = LinkState::up(Speed::_10M, Duplex::Half);
+        let c = LinkState::up(Speed::_100M, Duplex::Full);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        // `down()` returns a deterministic value
+        assert_eq!(LinkState::down(), LinkState::down());
+    }
+
+    #[test]
+    fn link_state_all_up_combinations() {
         let combos = [
-            LinkStatus::new(Speed::Mbps10, Duplex::Half),
-            LinkStatus::new(Speed::Mbps10, Duplex::Full),
-            LinkStatus::new(Speed::Mbps100, Duplex::Half),
-            LinkStatus::new(Speed::Mbps100, Duplex::Full),
+            LinkState::up(Speed::_10M, Duplex::Half),
+            LinkState::up(Speed::_10M, Duplex::Full),
+            LinkState::up(Speed::_100M, Duplex::Half),
+            LinkState::up(Speed::_100M, Duplex::Full),
         ];
         for i in 0..combos.len() {
             for j in (i + 1)..combos.len() {
@@ -136,7 +177,7 @@ mod tests {
 
     #[test]
     fn speed_clone_copy() {
-        let s = Speed::Mbps100;
+        let s = Speed::_100M;
         let s2 = s;
         let s3 = Clone::clone(&s);
         assert_eq!(s, s2);
@@ -153,10 +194,11 @@ mod tests {
     }
 
     #[test]
-    fn link_status_debug() {
-        let ls = LinkStatus::new(Speed::Mbps100, Duplex::Full);
+    fn link_state_debug() {
+        let ls = LinkState::up(Speed::_100M, Duplex::Full);
         let dbg = format!("{:?}", ls);
-        assert!(dbg.contains("Mbps100"), "debug missing Speed: {dbg}");
+        assert!(dbg.contains("_100M"), "debug missing Speed: {dbg}");
         assert!(dbg.contains("Full"), "debug missing Duplex: {dbg}");
+        assert!(dbg.contains("up: true"), "debug missing up flag: {dbg}");
     }
 }

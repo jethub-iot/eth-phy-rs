@@ -5,9 +5,39 @@ All notable changes to `eth-phy-lan87xx` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-05-22
 
-- Add `PhyLan87xx::set_loopback(on: bool)` API for MII loopback testing.
+### Breaking
+
+- Bump dependency on `eth-mdio-phy` to `^0.3`. The trait crate now
+  mirrors `esp_hal::ethernet::mac`: `LinkStatus { speed, duplex }`
+  becomes `LinkState { up: bool, speed, duplex }` (signalling moves
+  from `Option<LinkStatus>` to the explicit `up` flag), and
+  `Speed::Mbps10`/`Mbps100` are renamed to `Speed::_10M`/`_100M`.
+- `PhyLan87xx::poll_link` (and the `PhyLan87xxWithReset` delegate)
+  now returns `Result<LinkState, PhyError<M::Error>>` instead of
+  `Result<Option<LinkStatus>, PhyError<M::Error>>`. Callers that
+  pattern-matched on `Some`/`None` should match on `LinkState.up`
+  instead.
+- `PhyLan87xx::parse_pscsr` (driver-internal helper, exposed in
+  tests) now returns `Option<(Speed, Duplex)>` rather than
+  `Option<LinkStatus>`. The `None` case still signals an
+  unrecognised PSCSR speed/duplex encoding; `poll_link` maps it to
+  `LinkState::down()`.
+
+### Added
+
+- `defmt::warn!` logging (gated on the `defmt` feature) before
+  `init()` returns `PhyError::ResetTimeout` or
+  `PhyError::UnsupportedChip`. Captures PHY address and the
+  discriminating register read (the actual ID for `UnsupportedChip`),
+  so adapters that collapse rich `PhyError` variants into the upstream
+  `esp_hal::ethernet::phy::PhyError::NotFound` still leave behind a
+  diagnosable trail.
+
+### Added (pre-0.3 unreleased work)
+
+- `PhyLan87xx::set_loopback(on: bool)` API for MII loopback testing.
   Asymmetric semantics: ON path overwrites BMCR with
   `LOOPBACK | SPEED_100 | DUPLEX_FULL` to bypass auto-negotiation; OFF
   path is a read-modify-write that clears only bit 14 and preserves
