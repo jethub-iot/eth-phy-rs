@@ -33,8 +33,9 @@
 //! let mut phy = PhyLan87xx::new(/* PHY MDIO address */ 1);
 //! phy.init(mdio)?;
 //! loop {
-//!     if let Some(status) = phy.poll_link(mdio)? {
-//!         // status.speed, status.duplex
+//!     let state = phy.poll_link(mdio)?;
+//!     if state.up {
+//!         // state.speed, state.duplex
 //!         break;
 //!     }
 //! }
@@ -61,7 +62,7 @@
 mod regs;
 
 use eth_mdio_phy::ieee802_3;
-use eth_mdio_phy::{Duplex, LinkStatus, MdioBus, PhyCapabilities, PhyDriver, PhyError, Speed};
+use eth_mdio_phy::{Duplex, LinkState, MdioBus, PhyCapabilities, PhyDriver, PhyError, Speed};
 
 /// LAN87xx PHY driver (software-only, no reset pin).
 pub struct PhyLan87xx {
@@ -78,15 +79,17 @@ impl PhyLan87xx {
         }
     }
 
-    /// Decode the PSCSR speed/duplex indication field into a [`LinkStatus`].
+    /// Decode the PSCSR speed/duplex indication field into a (Speed, Duplex) pair.
     ///
     /// Returns `None` if the field contains a reserved or unrecognised value.
-    fn parse_pscsr(pscsr_val: u16) -> Option<LinkStatus> {
+    /// Callers map `None` to [`LinkState::down`] — there is no negotiated link
+    /// when the speed/duplex bits are indeterminate.
+    fn parse_pscsr(pscsr_val: u16) -> Option<(Speed, Duplex)> {
         match pscsr_val & regs::pscsr::SPEED_DUPLEX_MASK {
-            regs::pscsr::SPEED_10_HD => Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)),
-            regs::pscsr::SPEED_10_FD => Some(LinkStatus::new(Speed::Mbps10, Duplex::Full)),
-            regs::pscsr::SPEED_100_HD => Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)),
-            regs::pscsr::SPEED_100_FD => Some(LinkStatus::new(Speed::Mbps100, Duplex::Full)),
+            regs::pscsr::SPEED_10_HD => Some((Speed::_10M, Duplex::Half)),
+            regs::pscsr::SPEED_10_FD => Some((Speed::_10M, Duplex::Full)),
+            regs::pscsr::SPEED_100_HD => Some((Speed::_100M, Duplex::Half)),
+            regs::pscsr::SPEED_100_FD => Some((Speed::_100M, Duplex::Full)),
             _ => None,
         }
     }
@@ -170,12 +173,25 @@ impl PhyDriver for PhyLan87xx {
         // 1. Soft reset — check timeout
         let cleared = ieee802_3::soft_reset(mdio, self.addr, 500).map_err(PhyError::Mdio)?;
         if !cleared {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN87xx@{=u8}: soft reset did not clear BMCR.RESET within 500 attempts",
+                self.addr
+            );
             return Err(PhyError::ResetTimeout);
         }
 
         // 2. Verify PHY ID matches LAN87xx family
         let id = ieee802_3::read_phy_id(mdio, self.addr).map_err(PhyError::Mdio)?;
         if id & regs::PHY_OUI_MASK != regs::PHY_OUI {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN87xx@{=u8}: PHY ID {=u32:08x} does not match Microchip OUI {=u32:08x} (mask {=u32:08x})",
+                self.addr,
+                id,
+                regs::PHY_OUI,
+                regs::PHY_OUI_MASK
+            );
             return Err(PhyError::UnsupportedChip { id });
         }
 
@@ -212,14 +228,11 @@ impl PhyDriver for PhyLan87xx {
         Ok(())
     }
 
-    fn poll_link<M: MdioBus>(
-        &mut self,
-        mdio: &mut M,
-    ) -> Result<Option<LinkStatus>, PhyError<M::Error>> {
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M) -> Result<LinkState, PhyError<M::Error>> {
         let up = ieee802_3::is_link_up(mdio, self.addr).map_err(PhyError::Mdio)?;
         if !up {
             self.link_up = false;
-            return Ok(None);
+            return Ok(LinkState::down());
         }
 
         // Auto-negotiation vs. forced link is decided by BMCR.AN_ENABLE.
@@ -229,7 +242,7 @@ impl PhyDriver for PhyLan87xx {
             .read(self.addr, ieee802_3::regs::BMCR)
             .map_err(PhyError::Mdio)?;
 
-        let status = if bmcr & ieee802_3::bmcr::AN_ENABLE != 0 {
+        let (speed, duplex) = if bmcr & ieee802_3::bmcr::AN_ENABLE != 0 {
             // Auto-neg path: PSCSR speed/duplex bits are only valid
             // after AUTODONE is set. On parallel-detection links
             // BMSR.LINK_STATUS can latch high while auto-negotiation
@@ -241,9 +254,15 @@ impl PhyDriver for PhyLan87xx {
                 .map_err(PhyError::Mdio)?;
             if pscsr & regs::pscsr::AUTODONE == 0 {
                 self.link_up = false;
-                return Ok(None);
+                return Ok(LinkState::down());
             }
-            Self::parse_pscsr(pscsr)
+            match Self::parse_pscsr(pscsr) {
+                Some(sd) => sd,
+                None => {
+                    self.link_up = false;
+                    return Ok(LinkState::down());
+                }
+            }
         } else {
             // Forced-link path (`ieee802_3::force_link` clears
             // AN_ENABLE and programs SPEED_100 / DUPLEX_FULL directly
@@ -251,20 +270,20 @@ impl PhyDriver for PhyLan87xx {
             // read speed/duplex straight from BMCR. Link is reported
             // as soon as BMSR.LINK_STATUS goes up.
             let speed = if bmcr & ieee802_3::bmcr::SPEED_100 != 0 {
-                Speed::Mbps100
+                Speed::_100M
             } else {
-                Speed::Mbps10
+                Speed::_10M
             };
             let duplex = if bmcr & ieee802_3::bmcr::DUPLEX_FULL != 0 {
                 Duplex::Full
             } else {
                 Duplex::Half
             };
-            Some(LinkStatus::new(speed, duplex))
+            (speed, duplex)
         };
 
-        self.link_up = status.is_some();
-        Ok(status)
+        self.link_up = true;
+        Ok(LinkState::up(speed, duplex))
     }
 
     fn capabilities<M: MdioBus>(
@@ -335,10 +354,7 @@ impl<P: embedded_hal::digital::OutputPin> PhyDriver for PhyLan87xxWithReset<P> {
         self.inner.init(mdio)
     }
 
-    fn poll_link<M: MdioBus>(
-        &mut self,
-        mdio: &mut M,
-    ) -> Result<Option<LinkStatus>, PhyError<M::Error>> {
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M) -> Result<LinkState, PhyError<M::Error>> {
         self.inner.poll_link(mdio)
     }
 
@@ -614,7 +630,7 @@ mod tests {
         let mut mdio = MockMdio::new(vec![0x0000]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert!(result.is_none());
+        assert!(!result.up);
         assert!(!phy.link_up);
     }
 
@@ -627,7 +643,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Full)));
+        assert_eq!(result, LinkState::up(Speed::_100M, Duplex::Full));
         assert!(phy.link_up);
     }
 
@@ -640,7 +656,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Half));
     }
 
     #[test]
@@ -652,7 +668,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_100M, Duplex::Half));
     }
 
     #[test]
@@ -664,12 +680,14 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Full)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Full));
     }
 
     #[test]
-    fn poll_link_unknown_speed_returns_none() {
-        // PSCSR with 0b000 in speed/duplex field → unrecognised
+    fn poll_link_unknown_speed_reports_down() {
+        // PSCSR with 0b000 in speed/duplex field → unrecognised. The
+        // returned LinkState must have up=false so callers don't act on
+        // an indeterminate speed/duplex pair.
         let mut mdio = MockMdio::new(vec![
             bmsr::LINK_STATUS,
             ieee802_3::bmcr::AN_ENABLE,
@@ -677,12 +695,12 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert!(result.is_none());
+        assert!(!result.up);
         assert!(!phy.link_up);
     }
 
     #[test]
-    fn poll_link_returns_none_when_autodone_clear() {
+    fn poll_link_reports_down_when_autodone_clear() {
         // Parallel-detection race: BMSR.LINK_STATUS latches high while
         // auto-negotiation is still converging. PSCSR speed bits are
         // indeterminate in that window; poll_link must report "no link
@@ -694,10 +712,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert!(
-            result.is_none(),
-            "must wait for AUTODONE before decoding speed"
-        );
+        assert!(!result.up, "must wait for AUTODONE before decoding speed");
         assert!(!phy.link_up);
     }
 
@@ -712,7 +727,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Full)));
+        assert_eq!(result, LinkState::up(Speed::_100M, Duplex::Full));
         assert!(phy.link_up);
     }
 
@@ -722,7 +737,7 @@ mod tests {
         let mut mdio = MockMdio::new(vec![bmsr::LINK_STATUS, 0x0000]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Half));
     }
 
     #[test]
@@ -736,7 +751,7 @@ mod tests {
         ]);
         let mut phy = PhyLan87xx::new(1);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps100, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_100M, Duplex::Half));
     }
 
     #[test]
@@ -966,19 +981,19 @@ mod tests {
     fn parse_pscsr_all_modes() {
         assert_eq!(
             PhyLan87xx::parse_pscsr(regs::pscsr::SPEED_10_HD),
-            Some(LinkStatus::new(Speed::Mbps10, Duplex::Half))
+            Some((Speed::_10M, Duplex::Half))
         );
         assert_eq!(
             PhyLan87xx::parse_pscsr(regs::pscsr::SPEED_10_FD),
-            Some(LinkStatus::new(Speed::Mbps10, Duplex::Full))
+            Some((Speed::_10M, Duplex::Full))
         );
         assert_eq!(
             PhyLan87xx::parse_pscsr(regs::pscsr::SPEED_100_HD),
-            Some(LinkStatus::new(Speed::Mbps100, Duplex::Half))
+            Some((Speed::_100M, Duplex::Half))
         );
         assert_eq!(
             PhyLan87xx::parse_pscsr(regs::pscsr::SPEED_100_FD),
-            Some(LinkStatus::new(Speed::Mbps100, Duplex::Full))
+            Some((Speed::_100M, Duplex::Full))
         );
         // Unknown value (0b000 << 2 = 0x00)
         assert_eq!(PhyLan87xx::parse_pscsr(0x0000), None);
@@ -990,7 +1005,7 @@ mod tests {
         let val = regs::pscsr::SPEED_100_FD | regs::pscsr::AUTODONE | 0x0003 | 0x8000;
         assert_eq!(
             PhyLan87xx::parse_pscsr(val),
-            Some(LinkStatus::new(Speed::Mbps100, Duplex::Full))
+            Some((Speed::_100M, Duplex::Full))
         );
     }
 }

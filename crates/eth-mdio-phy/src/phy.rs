@@ -4,7 +4,7 @@
 //! PHY driver trait and common error type.
 
 use crate::mdio::MdioBus;
-use crate::types::{LinkStatus, PhyCapabilities};
+use crate::types::{LinkState, PhyCapabilities};
 
 /// Common error type for PHY driver operations.
 #[derive(Debug)]
@@ -58,11 +58,15 @@ pub trait PhyDriver {
     /// Initialize PHY: reset, configure, enable auto-negotiation.
     fn init<M: MdioBus>(&mut self, mdio: &mut M) -> Result<(), PhyError<M::Error>>;
 
-    /// Poll link status. Returns `Some(LinkStatus)` when up, `None` when down.
-    fn poll_link<M: MdioBus>(
-        &mut self,
-        mdio: &mut M,
-    ) -> Result<Option<LinkStatus>, PhyError<M::Error>>;
+    /// Poll the current link state.
+    ///
+    /// Always returns a fully-populated [`LinkState`]; callers must
+    /// check the [`up`](LinkState::up) flag before relying on the
+    /// negotiated `speed` / `duplex` fields. The shape mirrors
+    /// upstream `esp_hal::ethernet::mac::LinkState` so an
+    /// `esp_hal::ethernet::phy::Phy` adapter can return this value
+    /// without restructuring.
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M) -> Result<LinkState, PhyError<M::Error>>;
 
     /// Query hardware capabilities.
     fn capabilities<M: MdioBus>(&self, mdio: &mut M)

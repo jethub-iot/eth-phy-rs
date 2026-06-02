@@ -37,7 +37,7 @@ pub mod plca;
 pub use plca::{PlcaConfig, PlcaError, PlcaStatus};
 
 use eth_mdio_phy::{
-    ieee802_3, Duplex, LinkStatus, MdioBus, PhyCapabilities, PhyDriver, PhyError, Speed,
+    ieee802_3, Duplex, LinkState, MdioBus, PhyCapabilities, PhyDriver, PhyError, Speed,
 };
 
 /// Concrete LAN867x family member, identified at [`PhyLan867x::init`]
@@ -105,6 +105,11 @@ impl PhyDriver for PhyLan867x {
         //    matches the lan87xx driver's allowance.
         let cleared = ieee802_3::soft_reset(mdio, self.addr, 500).map_err(PhyError::Mdio)?;
         if !cleared {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN867x@{=u8}: BMCR.SW_RESET did not self-clear within 500 attempts",
+                self.addr
+            );
             return Err(PhyError::ResetTimeout);
         }
 
@@ -126,6 +131,11 @@ impl PhyDriver for PhyLan867x {
             }
         }
         if !got_resetc {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN867x@{=u8}: STS2.RESETC handshake did not complete within 500 reads",
+                self.addr
+            );
             return Err(PhyError::ResetTimeout);
         }
 
@@ -137,6 +147,14 @@ impl PhyDriver for PhyLan867x {
         //    add silicon-rev branching here.
         let id = ieee802_3::read_phy_id(mdio, self.addr).map_err(PhyError::Mdio)?;
         if id & regs::PHY_OUI_MODEL_MASK != regs::PHY_OUI_MODEL_LAN867X {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN867x@{=u8}: PHY ID {=u32:08x} (masked {=u32:08x}) does not match LAN867x family {=u32:08x}",
+                self.addr,
+                id,
+                id & regs::PHY_OUI_MODEL_MASK,
+                regs::PHY_OUI_MODEL_LAN867X
+            );
             return Err(PhyError::UnsupportedChip { id });
         }
 
@@ -160,6 +178,13 @@ impl PhyDriver for PhyLan867x {
                 // of the three documented packages. Surface the strap
                 // value rather than the PHY ID so the caller doesn't
                 // mistakenly conclude the chip is unsupported.
+                #[cfg(feature = "defmt")]
+                defmt::warn!(
+                    "LAN867x@{=u8}: STRAP_CTRL0 = {=u16:04x} (PKGTYP {=u16:04x}) is not LAN8670/8671/8672",
+                    self.addr,
+                    strap,
+                    strap & regs::STRAP_CTRL0_PKGTYP_MASK
+                );
                 return Err(PhyError::UnsupportedPackage {
                     strap: u32::from(strap),
                 });
@@ -173,6 +198,14 @@ impl PhyDriver for PhyLan867x {
         let midver = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_MIDVER)
             .map_err(PhyError::Mdio)?;
         if midver != regs::MIDVER_EXPECTED {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "LAN867x@{=u8}: MMD-31 MIDVER = {=u16:04x}, expected {=u16:04x} (OPEN Alliance T1S map sentinel) — PHY ID was {=u32:08x}",
+                self.addr,
+                midver,
+                regs::MIDVER_EXPECTED,
+                id
+            );
             return Err(PhyError::UnsupportedChip { id });
         }
 
@@ -198,14 +231,11 @@ impl PhyDriver for PhyLan867x {
         Ok(())
     }
 
-    fn poll_link<M: MdioBus>(
-        &mut self,
-        mdio: &mut M,
-    ) -> Result<Option<LinkStatus>, PhyError<M::Error>> {
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M) -> Result<LinkState, PhyError<M::Error>> {
         // On a 10BASE-T1S multidrop bus there is no autonegotiation and
         // no per-link-partner signal. Three distinct cases:
         //
-        // - Driver not yet `init`-ed: report None. The chip has neither
+        // - Driver not yet `init`-ed: report down. The chip has neither
         //   completed its RESETC handshake nor had `T1SPMACTL.MDE` set,
         //   so we have no business claiming a working link. Used as the
         //   gate: `self.chip` is populated only by `init()` and never
@@ -218,7 +248,7 @@ impl PhyDriver for PhyLan867x {
         // - PLCA on: PLCA_STS.PST tracks whether BEACONs are being TX'd
         //   (coordinator) or RX'd (follower). It is the only meaningful
         //   "are we participating in the network" indicator. Report
-        //   linked when set; report None until the bus stabilises.
+        //   linked when set; report down until the bus stabilises.
         //
         // PLCA mode is selected by `self.plca_id`, which `configure_plca`
         // sets and `disable_plca` / `init` clear. Single-owner contract:
@@ -227,15 +257,15 @@ impl PhyDriver for PhyLan867x {
         // someone else flips `PLCA_CTRL0.EN` directly via MDIO between
         // our `configure_plca` and a `poll_link`, we will not notice.
         match (self.chip, self.plca_id) {
-            (None, _) => Ok(None),
-            (Some(_), None) => Ok(Some(LinkStatus::new(Speed::Mbps10, Duplex::Half))),
+            (None, _) => Ok(LinkState::down()),
+            (Some(_), None) => Ok(LinkState::up(Speed::_10M, Duplex::Half)),
             (Some(_), Some(_)) => {
                 let sts = mmd::mmd_read(mdio, self.addr, regs::MMD_VS2, regs::MMD_REG_PLCA_STS)
                     .map_err(PhyError::Mdio)?;
                 if sts & regs::PLCA_STS_PST != 0 {
-                    Ok(Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)))
+                    Ok(LinkState::up(Speed::_10M, Duplex::Half))
                 } else {
-                    Ok(None)
+                    Ok(LinkState::down())
                 }
             }
         }
@@ -466,10 +496,7 @@ impl<P: embedded_hal::digital::OutputPin> PhyDriver for PhyLan867xWithReset<P> {
         self.inner.init(mdio)
     }
 
-    fn poll_link<M: MdioBus>(
-        &mut self,
-        mdio: &mut M,
-    ) -> Result<Option<LinkStatus>, PhyError<M::Error>> {
+    fn poll_link<M: MdioBus>(&mut self, mdio: &mut M) -> Result<LinkState, PhyError<M::Error>> {
         self.inner.poll_link(mdio)
     }
 
@@ -827,7 +854,7 @@ mod tests {
                                      // After the failed re-init: poll_link must NOT claim a link.
         let mut empty_mdio = MockMdio::new(vec![]);
         let result = phy.poll_link(&mut empty_mdio).unwrap();
-        assert!(result.is_none());
+        assert!(!result.up);
     }
 
     #[test]
@@ -869,13 +896,13 @@ mod tests {
     // ── poll_link tests ────────────────────────────────────────────────
 
     #[test]
-    fn poll_link_before_init_returns_none() {
+    fn poll_link_before_init_reports_down() {
         // Pre-init: chip = None ⇒ poll_link must NOT claim a working
         // link. The reset handshake hasn't run, T1SPMACTL.MDE is at the
         // chip's power-on default (zero), so there is no link to report.
         let mut mdio = MockMdio::new(vec![]);
         let mut phy = PhyLan867x::new(0);
-        assert!(phy.poll_link(&mut mdio).unwrap().is_none());
+        assert!(!phy.poll_link(&mut mdio).unwrap().up);
         // No MDIO traffic on the un-init path either.
         assert!(mdio.writes.is_empty());
         assert_eq!(mdio.read_idx, 0);
@@ -891,7 +918,7 @@ mod tests {
         let mut phy = PhyLan867x::new(0);
         phy.chip = Some(Chip::Lan8671);
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Half));
         // Crucially: no MDIO traffic in the PLCA-off branch.
         assert!(mdio.writes.is_empty());
         assert_eq!(mdio.read_idx, 0);
@@ -904,17 +931,17 @@ mod tests {
         phy.chip = Some(Chip::Lan8671); // simulate post-init state
         phy.plca_id = Some(0); // simulate post-configure_plca state
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Half));
     }
 
     #[test]
-    fn poll_link_plca_enabled_pst_clear_reports_none() {
+    fn poll_link_plca_enabled_pst_clear_reports_down() {
         let mut mdio = MockMdio::new(vec![0x0000]); // PST clear
         let mut phy = PhyLan867x::new(0);
         phy.chip = Some(Chip::Lan8671);
         phy.plca_id = Some(1); // follower waiting for BEACONs
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert!(result.is_none());
+        assert!(!result.up);
     }
 
     #[test]
@@ -1331,7 +1358,7 @@ mod tests {
         phy.configure_plca(&mut mdio, &PlcaConfig::default())
             .unwrap();
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert!(result.is_none(), "PST=0 ⇒ link not yet up");
+        assert!(!result.up, "PST=0 ⇒ link not yet up");
     }
 
     #[test]
@@ -1437,7 +1464,7 @@ mod tests {
         let writes_before = mdio.writes.len();
         let reads_before = mdio.read_idx;
         let result = phy.poll_link(&mut mdio).unwrap();
-        assert_eq!(result, Some(LinkStatus::new(Speed::Mbps10, Duplex::Half)));
+        assert_eq!(result, LinkState::up(Speed::_10M, Duplex::Half));
         // No additional MDIO traffic from poll_link.
         assert_eq!(mdio.writes.len(), writes_before);
         assert_eq!(mdio.read_idx, reads_before);

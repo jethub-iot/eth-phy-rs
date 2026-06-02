@@ -15,8 +15,13 @@
 //! - [`ieee802_3`] — Clause 22 register addresses, bit constants, and
 //!   convenience helpers (`soft_reset`, `enable_auto_negotiation`,
 //!   `is_link_up`, `read_phy_id`, `read_capabilities`, `force_link`).
-//! - Shared types: [`Speed`], [`Duplex`], [`LinkStatus`],
+//! - Shared types: [`Speed`], [`Duplex`], [`LinkState`],
 //!   [`PhyCapabilities`], [`PhyError`].
+//!
+//! Type names and `Speed` variants mirror the upstream
+//! `esp_hal::ethernet::mac` shape so adapter crates that bridge a
+//! [`PhyDriver`] to `esp_hal::ethernet::phy::Phy` need only a thin
+//! identity translation, not a field-by-field rebuild.
 //!
 //! See the crate-level README (rendered on docs.rs and shipped via
 //! `Cargo.toml`'s `readme` field) for installation, worked
@@ -26,13 +31,13 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use eth_mdio_phy::{ieee802_3, LinkStatus, MdioBus, PhyDriver, PhyError};
+//! use eth_mdio_phy::{ieee802_3, LinkState, MdioBus, PhyDriver, PhyError};
 //!
 //! # fn drive<M: MdioBus, P: PhyDriver>(mdio: &mut M, phy: &mut P)
 //! # -> Result<(), PhyError<M::Error>>
 //! # {
 //! phy.init(mdio)?;
-//! while phy.poll_link(mdio)?.is_none() { /* idle */ }
+//! while !phy.poll_link(mdio)?.up { /* idle */ }
 //! # Ok(())
 //! # }
 //! ```
@@ -41,7 +46,7 @@
 //!
 //! | Feature | Default | When to enable |
 //! | --- | --- | --- |
-//! | `defmt` | off | Adds `defmt::Format` derives on [`LinkStatus`], [`PhyCapabilities`], [`PhyError`]. |
+//! | `defmt` | off | Adds `defmt::Format` derives on [`LinkState`], [`PhyCapabilities`], [`PhyError`]. |
 //!
 //! # Compatibility
 //!
@@ -66,4 +71,4 @@ mod types;
 
 pub use mdio::MdioBus;
 pub use phy::{PhyDriver, PhyError};
-pub use types::{Duplex, LinkStatus, PhyCapabilities, Speed};
+pub use types::{Duplex, LinkState, PhyCapabilities, Speed};

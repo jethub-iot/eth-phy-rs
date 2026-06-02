@@ -5,6 +5,34 @@ All notable changes to `eth-phy-lan867x` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-22
+
+### Breaking
+
+- Bump dependency on `eth-mdio-phy` to `^0.3`. The trait crate now
+  mirrors `esp_hal::ethernet::mac`: `LinkStatus { speed, duplex }`
+  becomes `LinkState { up: bool, speed, duplex }` (signalling moves
+  from `Option<LinkStatus>` to the explicit `up` flag), and
+  `Speed::Mbps10`/`Mbps100` are renamed to `Speed::_10M`/`_100M`.
+- `PhyLan867x::poll_link` (and the `PhyLan867xWithReset` delegate)
+  now returns `Result<LinkState, PhyError<M::Error>>` instead of
+  `Result<Option<LinkStatus>, PhyError<M::Error>>`. Callers that
+  pattern-matched on `Some`/`None` should match on `LinkState.up`
+  instead. Behaviour is preserved: pre-init and PLCA-on-PST-clear
+  paths return `LinkState::down()`, the CSMA/CD and PST-set paths
+  return `LinkState::up(Speed::_10M, Duplex::Half)`.
+
+### Added
+
+- `defmt::warn!` logging (gated on the `defmt` feature) before
+  `init()` returns `PhyError::ResetTimeout` (both the BMCR.SW_RESET
+  and `STS2.RESETC` cases), `PhyError::UnsupportedChip` (both the
+  PHY-ID family mismatch and the MIDVER sentinel mismatch), and
+  `PhyError::UnsupportedPackage`. Captures PHY address plus the
+  discriminating register read so adapters that collapse the rich
+  `PhyError` set down to a narrower error type still leave behind a
+  diagnosable trail.
+
 ## [0.1.0] - 2026-05-06
 
 First public release. Bundled with the rest of the
