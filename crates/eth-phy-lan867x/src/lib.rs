@@ -835,11 +835,11 @@ mod tests {
     }
 
     #[test]
-    fn init_failure_makes_poll_link_report_none() {
+    fn init_failure_makes_poll_link_report_down() {
         // End-to-end behavioural invariant: a failed init means
-        // poll_link reports None, not the "always linked" shortcut.
-        // This is the user-visible payoff of the atomic-init
-        // contract.
+        // poll_link reports LinkState { up: false, .. } (the chip-not-
+        // initialised path), not the CSMA/CD "always linked" shortcut.
+        // This is the user-visible payoff of the atomic-init contract.
         let mut mdio = MockMdio::new(vec![
             0x0000,
             regs::STS2_RESETC,

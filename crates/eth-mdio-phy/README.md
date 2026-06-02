@@ -13,17 +13,17 @@ they talk to. `#![no_std]`, no allocations, no platform dependency.
 
 ```toml
 [dependencies]
-eth-mdio-phy = "0.2"
+eth-mdio-phy = "0.3"
 ```
 
 | Feature | Default | Pulls in |
 | --- | --- | --- |
-| `defmt` | off | `defmt::Format` derives on `LinkStatus`, `PhyCapabilities`, `PhyError` |
+| `defmt` | off | `defmt::Format` derives on `LinkState`, `PhyCapabilities`, `PhyError` |
 
 **MSRV: 1.75.** Pure `#![no_std]` — works on any target.
 
-> **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
-> `0.2.x` — both digits are treated as the major axis below 1.0.
+> **Pre-1.0 SemVer note.** Cargo's caret on `^0.2` will *not* pick up
+> `0.3.x` — both digits are treated as the major axis below 1.0.
 > Consumers tracking this crate must bump the minor explicitly when
 > a new minor release lands.
 
@@ -56,9 +56,13 @@ dependencies. It is consumed by:
   `enable_auto_negotiation`, `is_link_up`, `read_phy_id`,
   `read_capabilities`, `force_link`. Reuse these in any
   chip-specific driver instead of re-deriving the bit numbers.
-* **Shared types** — `Speed { Mbps10, Mbps100 }`,
-  `Duplex { Half, Full }`, `LinkStatus { speed, duplex }`,
-  `PhyCapabilities` (chip identification + advertised abilities).
+* **Shared types** — `Speed { _10M, _100M }` and `Duplex { Half, Full }`
+  (variant names mirror `esp_hal::ethernet::phy::Speed` / `Duplex`);
+  `LinkState { up: bool, speed: Speed, duplex: Duplex }` (the `up` flag
+  is the canonical signal — link-down does NOT mean "missing speed/
+  duplex", and link-up returns all three together); `PhyCapabilities`
+  (chip identification + advertised abilities). All three are
+  `#[non_exhaustive]` so future variants land as additive minor releases.
 
 ---
 
@@ -71,17 +75,16 @@ within one session.
 
 ```rust no_run
 use eth_mdio_phy::{
-    ieee802_3, LinkStatus, MdioBus, PhyCapabilities, PhyDriver, PhyError,
+    ieee802_3, LinkState, MdioBus, PhyCapabilities, PhyDriver, PhyError,
 };
 
 pub struct MyPhy {
     addr: u8,
-    link_up: bool,
 }
 
 impl MyPhy {
     pub fn new(addr: u8) -> Self {
-        Self { addr, link_up: false }
+        Self { addr }
     }
 }
 
@@ -118,14 +121,15 @@ impl PhyDriver for MyPhy {
     }
 
     fn poll_link<M: MdioBus>(&mut self, mdio: &mut M)
-        -> Result<Option<LinkStatus>, PhyError<M::Error>>
+        -> Result<LinkState, PhyError<M::Error>>
     {
         let up = ieee802_3::is_link_up(mdio, self.addr)
             .map_err(PhyError::Mdio)?;
-        if !up { return Ok(None); }
+        if !up { return Ok(LinkState::down()); }
         // Decode speed/duplex from a chip-specific register here, or
-        // fall back to ANLPAR via ieee802_3 helpers.
-        # Ok(None)
+        // fall back to ANLPAR via ieee802_3 helpers. On link-up always
+        // construct via `LinkState::up(speed, duplex)`.
+        # Ok(LinkState::down())
     }
 
     fn capabilities<M: MdioBus>(&self, mdio: &mut M)
@@ -145,7 +149,7 @@ caring which chip is on the board:
 # (mdio: &mut M, phy: &mut P) -> Result<(), eth_mdio_phy::PhyError<M::Error>>
 # {
 phy.init(mdio)?;
-while phy.poll_link(mdio)?.is_none() { /* idle */ }
+while !phy.poll_link(mdio)?.up { /* idle */ }
 # Ok(())
 # }
 ```

@@ -216,6 +216,11 @@ pub fn force_link<M: MdioBus>(
     let mut val = mdio.read(phy_addr, regs::BMCR)?;
     val &=
         !(bmcr::AN_ENABLE | bmcr::AN_RESTART | bmcr::ISOLATE | bmcr::SPEED_100 | bmcr::DUPLEX_FULL);
+    // Exhaustive over the current `Speed` / `Duplex` variants. Both
+    // enums are `#[non_exhaustive]`, but new variants are only legal
+    // through an additive minor release of this crate — adding one
+    // here is a compile-time forcing function to revisit `force_link`,
+    // which needs a hardware encoding for any speed/duplex it ships.
     match speed {
         Speed::_100M => val |= bmcr::SPEED_100,
         Speed::_10M => {}

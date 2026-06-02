@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-05-22
 
+### ⚠ Hardware verification status
+
+The CSMA/CD multidrop path (init + 10BASE-T1S half-duplex link
+report) and the full PLCA API surface (`configure_plca`,
+`disable_plca`, `plca_status`, MMD indirection helpers) compile and
+pass host-side `MockMdio` unit tests. **No bench run against real
+silicon has happened in this release window.** Plan for empirical
+validation before relying on this driver in production — register-
+by-register agreement with the datasheet is a necessary but not
+sufficient condition for correctness against a physical LAN867x.
+See the matching warning at the top of `README.md`.
+
 ### Breaking
 
 - Bump dependency on `eth-mdio-phy` to `^0.3`. The trait crate now
@@ -122,4 +134,5 @@ round.
 Reference: Microchip DS60001573C (silicon revision 2 = product
 revision B1).
 
+[0.2.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan867x-v0.1.0...eth-phy-lan867x-v0.2.0
 [0.1.0]: https://github.com/jethub-iot/eth-phy-rs/releases/tag/eth-phy-lan867x-v0.1.0
