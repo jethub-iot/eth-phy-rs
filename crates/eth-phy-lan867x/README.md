@@ -29,8 +29,8 @@ via [`esp_emac::mdio::EspMdio`](https://docs.rs/esp-emac).
 
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.2"
-eth-phy-lan867x = "0.1"
+eth-mdio-phy    = "0.3"
+eth-phy-lan867x = "0.2"
 ```
 
 | Feature | Default | Pulls in |
@@ -39,23 +39,36 @@ eth-phy-lan867x = "0.1"
 
 **MSRV: 1.75.** Pure `#![no_std]`, no allocations. Works on any target.
 
+> **⚠️ PLCA path is NOT bench-verified on real silicon yet.** The
+> CSMA/CD multidrop bring-up path (init + `BMSR.LINK_STATUS == 1` +
+> half-duplex 10BASE-T1S) is the only mode that has been exercised on
+> hardware so far. The full PLCA API surface (`configure_plca`,
+> `disable_plca`, `plca_status`, MMD helpers) compiles and is covered
+> by host-side `MockMdio` unit tests, but no bench run on JXD-R6-E1T1S
+> or similar has happened yet. If you build a production multidrop
+> segment on this driver's PLCA mode, **plan for empirical
+> validation** — register-by-register agreement with the datasheet is
+> a necessary but not sufficient condition for correctness against the
+> real LAN867x family. Issue link / bench-verification status is
+> tracked downstream in JetHome's firmware repo.
+>
 > **Pre-1.0 SemVer note.** Cargo's caret on `^0.1` will *not* pick up
 > `0.2.x`, and vice versa — both digits behave as the major axis
-> below 1.0. Bump explicitly when a new release lands. This crate's
-> first release is `0.1`, but it depends on `eth-mdio-phy 0.2`.
+> below 1.0. Bump explicitly when a new release lands. This release
+> is `0.2`, which depends on `eth-mdio-phy 0.3`.
 
 ## Compatibility
 
 | Crate | Version |
 | --- | --- |
-| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.2.x |
-| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.2.x |
+| [`eth-mdio-phy`](https://crates.io/crates/eth-mdio-phy) | 0.3.x |
+| For ESP32: [`esp-emac`](https://crates.io/crates/esp-emac) | 0.5.x |
 
 ---
 
 ## Quick start
 
-CSMA/CD multidrop bus (no PLCA), PHY at MDIO addr 0:
+CSMA/CD multidrop bus (no PLCA — the verified path), PHY at MDIO addr 0:
 
 ```rust no_run
 use eth_phy_lan867x::PhyLan867x;
@@ -70,11 +83,12 @@ let mut phy = PhyLan867x::new(0);
 phy.init(mdio)?;
 
 // On a CSMA/CD bus there is no per-link-partner signal — the bus is
-// "always there". poll_link returns Some(LinkStatus { Mbps10, Half })
-// once init has succeeded.
-let status = phy.poll_link(mdio)?.expect("CSMA/CD always reports linked");
-assert_eq!(status.speed, eth_mdio_phy::Speed::Mbps10);
-assert_eq!(status.duplex, eth_mdio_phy::Duplex::Half);
+// "always there". poll_link returns the deterministic 10BASE-T1S /
+// half-duplex link state once init has succeeded.
+let state = phy.poll_link(mdio)?;
+assert!(state.up);
+assert_eq!(state.speed,  eth_mdio_phy::Speed::_10M);
+assert_eq!(state.duplex, eth_mdio_phy::Duplex::Half);
 # Ok(())
 # }
 ```
@@ -178,10 +192,12 @@ also match `PhyLan87xxWithReset`.
 ## What `poll_link` does
 
 * **PLCA off** (CSMA/CD): no MDIO traffic. Returns
-  `Some(LinkStatus { Mbps10, Half })` — the bus is "always there".
-* **PLCA on**: reads MMD-31 `PLCA_STS.PST`. Returns linked when set
-  (BEACONs are being TX'd as coordinator or RX'd as follower);
-  returns `None` while the bus is still synchronising.
+  `LinkState { up: true, speed: Speed::_10M, duplex: Duplex::Half }`
+  — the bus is "always there".
+* **PLCA on**: reads MMD-31 `PLCA_STS.PST`. Returns
+  `LinkState { up: true, .. }` when set (BEACONs are being TX'd as
+  coordinator or RX'd as follower); returns `LinkState::down()` while
+  the bus is still synchronising.
 
 The branch is selected by the driver's internal flag, which
 `configure_plca` sets and `disable_plca` / `init` clear. The driver
@@ -231,7 +247,7 @@ MDIO bus reads are floating high — typical signs:
 * The PHY is held in `RESET_N`. Use `PhyLan867xWithReset` and call
   `hardware_reset` first.
 
-### PLCA configured but `poll_link` always returns `None`
+### PLCA configured but `poll_link` always reports `up = false`
 
 Most common cause: every node thinks it is the coordinator
 (`node_id = 0`). Datasheet sec 4.9.2 covers the diagnostic flags
@@ -243,21 +259,33 @@ Most common cause: every node thinks it is the coordinator
 * `node_id >= node_count` on a follower: this is rejected by
   `configure_plca` with `PlcaError::InvalidConfig`.
 
+Note that the PLCA path itself is not yet bench-verified — see the
+warning in [Installation](#installation). A failure mode you observe
+in the field may be a driver bug rather than a configuration mistake.
+A repro report against this crate is welcome.
+
 ### Need PLCA diagnostic counters
 
-`STS1` decoding, `TOCNT` / `BCNCNT` readers — deferred to v0.2.
-For v0.1.x, read MMD-31 registers `0x18` / `0x24-0x27` directly
-through your `MdioBus` if you need them in the meantime.
+`STS1` decoding, `TOCNT` / `BCNCNT` readers — deferred to a follow-up
+release. For 0.2.x, read MMD-31 registers `0x18` / `0x24-0x27`
+directly through your `MdioBus` if you need them in the meantime.
 
 ---
 
-## Hardware verified on
+## Hardware verification status
 
-The driver compiles, runs unit tests against a `MockMdio`, and
-matches the datasheet register-by-register against
-[DS60001573C](https://www.microchip.com/) (silicon revision 2 =
-product revision B1). Hardware bring-up on JXD-R6-E1T1S is in
-progress and will land in a follow-up release.
+* **Host-side**: 50+ unit tests against a scripted `MockMdio` cover
+  the init sequence, register reads/writes, PLCA configure / disable
+  / status decoding, MMD indirection, and every `PhyError` /
+  `PlcaError` path. Run with `cargo test`.
+* **Datasheet conformance**: register addresses and bit layouts cross-
+  checked against [DS60001573C](https://www.microchip.com/) (silicon
+  revision 2 = product revision B1) line-by-line.
+* **Real silicon**: **no bench run yet** — neither the basic CSMA/CD
+  bring-up nor the PLCA mode has been exercised on a physical LAN867x
+  yet. Plan for empirical validation if you intend to ship this driver
+  in production. The first hardware bring-up will land in a follow-up
+  release.
 
 ## License
 
