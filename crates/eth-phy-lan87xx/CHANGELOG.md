@@ -107,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `poll_link`: BMSR link bit + PSCSR speed/duplex decode (auto-neg
   path) or `BMCR.SPEED_100`/`DUPLEX_FULL` (forced-link path).
 
+[Unreleased]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan87xx-v0.3.0...HEAD
 [0.3.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan87xx-v0.2.0...eth-phy-lan87xx-v0.3.0
 [0.2.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan87xx-v0.1.1...eth-phy-lan87xx-v0.2.0
 [0.1.1]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan87xx-v0.1.0...eth-phy-lan87xx-v0.1.1
