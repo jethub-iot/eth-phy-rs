@@ -1,18 +1,18 @@
 # eth-phy
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](#license)
-[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#pre-publication)
 
 Modular Ethernet PHY stack for bare-metal Rust (`#![no_std]`, no
 heap, no platform dependency).
 
-The workspace is split into two crates so a board-bringup author can
-pick exactly the abstraction they need:
+The workspace is split into three crates so a board-bringup author
+can pick exactly the abstraction they need:
 
 | Crate | Purpose | Crates.io | docs.rs |
 | --- | --- | --- | --- |
-| [`eth-mdio-phy`](crates/eth-mdio-phy/) | `MdioBus` and `PhyDriver` traits, IEEE 802.3 Clause 22 helpers, shared `Speed`/`Duplex`/`LinkStatus`/`PhyCapabilities` types | [![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy) | [![docs](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy) |
-| [`eth-phy-lan87xx`](crates/eth-phy-lan87xx/) | Driver for the Microchip LAN87xx family (LAN8710A / LAN8720A / LAN8740A / LAN8741A / LAN8742A) | [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx) | [![docs](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx) |
+| [`eth-mdio-phy`](crates/eth-mdio-phy/) | `MdioBus` and `PhyDriver` traits, IEEE 802.3 Clause 22 helpers, shared `Speed`/`Duplex`/`LinkState`/`PhyCapabilities` types | [![Crates.io](https://img.shields.io/crates/v/eth-mdio-phy.svg)](https://crates.io/crates/eth-mdio-phy) | [![docs](https://docs.rs/eth-mdio-phy/badge.svg)](https://docs.rs/eth-mdio-phy) |
+| [`eth-phy-lan87xx`](crates/eth-phy-lan87xx/) | Driver for the Microchip LAN87xx family — 10/100 BASE-T (LAN8710A / LAN8720A / LAN8740A / LAN8741A / LAN8742A) | [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan87xx.svg)](https://crates.io/crates/eth-phy-lan87xx) | [![docs](https://docs.rs/eth-phy-lan87xx/badge.svg)](https://docs.rs/eth-phy-lan87xx) |
+| [`eth-phy-lan867x`](crates/eth-phy-lan867x/) | Driver for the Microchip LAN867x family — 10BASE-T1S single-pair multidrop (LAN8670 / LAN8671 / LAN8672), with optional PLCA (**PLCA path not yet bench-verified — see the crate README**) | [![Crates.io](https://img.shields.io/crates/v/eth-phy-lan867x.svg)](https://crates.io/crates/eth-phy-lan867x) | [![docs](https://docs.rs/eth-phy-lan867x/badge.svg)](https://docs.rs/eth-phy-lan867x) |
 
 The MAC side is intentionally not part of this stack — provide any
 `MdioBus` impl and you can drive the PHY from any Ethernet MAC
@@ -20,26 +20,34 @@ The MAC side is intentionally not part of this stack — provide any
 
 ## Installation
 
-### Driving a LAN87xx-family PHY
+### Driving a LAN87xx-family PHY (10/100 BASE-T)
 
 ```toml
 [dependencies]
-eth-mdio-phy    = "0.1"
-eth-phy-lan87xx = "0.1"
+eth-mdio-phy    = "0.3"
+eth-phy-lan87xx = "0.3"
 ```
 
 For ESP32 the MAC implementation is in
 [`esp-emac`](https://crates.io/crates/esp-emac):
 
 ```toml
-esp-emac = { version = "0.1", features = ["esp-hal", "mdio-phy", "embassy-net"] }
+esp-emac = { version = "0.5", features = ["esp-hal", "mdio-phy", "embassy-net"] }
+```
+
+### Driving a LAN867x-family PHY (10BASE-T1S)
+
+```toml
+[dependencies]
+eth-mdio-phy    = "0.3"
+eth-phy-lan867x = "0.2"
 ```
 
 ### Implementing your own PHY driver
 
 ```toml
 [dependencies]
-eth-mdio-phy = "0.1"
+eth-mdio-phy = "0.3"
 ```
 
 Then `impl PhyDriver for MyPhy { ... }` against the trait — see
@@ -47,26 +55,28 @@ Then `impl PhyDriver for MyPhy { ... }` against the trait — see
 example, including how to write a GPIO bit-bang `MdioBus` for
 boards that don't have an SMI peripheral.
 
-### Pre-publication
+### Tracking the development tip
 
-> The crates **are not yet on crates.io** (this is the WIP badge).
-> Until they ship, vendor them through git submodules and reference
-> via local `path` instead of `version`:
->
-> ```sh
-> git submodule add https://github.com/jethub-iot/eth-phy-rs.git   vendor/eth-phy
-> git submodule add https://github.com/jethub-iot/esp-emac-rs.git  vendor/esp-emac   # if you also need the ESP32 MAC
-> git submodule update --init --recursive
-> ```
->
-> ```toml
-> [dependencies]
-> eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
-> eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
-> esp-emac        = { path = "vendor/esp-emac", features = ["esp-hal", "mdio-phy", "embassy-net"] }
-> ```
->
-> Once published the snippet collapses to plain `version = "0.1"` deps.
+If you need an unreleased fix or want to build a downstream crate
+from the workspace source rather than the published versions, vendor
+this repository as a git submodule and reference its workspace
+members via `path` instead of `version`:
+
+```sh
+git submodule add https://github.com/jethub-iot/eth-phy-rs.git   vendor/eth-phy
+git submodule update --init --recursive
+```
+
+```toml
+[dependencies]
+eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }
+eth-phy-lan867x = { path = "vendor/eth-phy/crates/eth-phy-lan867x" }
+```
+
+For an `[patch.crates-io]`-based override pattern (manifest reads
+like a normal registry pin but cargo resolves through the submodule)
+configure the patch in your workspace `Cargo.toml`.
 
 ## Why a separate trait crate
 
@@ -92,7 +102,7 @@ pub trait PhyDriver {
     fn init<M: MdioBus>(&mut self, mdio: &mut M)
         -> Result<(), PhyError<M::Error>>;
     fn poll_link<M: MdioBus>(&mut self, mdio: &mut M)
-        -> Result<Option<LinkStatus>, PhyError<M::Error>>;
+        -> Result<LinkState, PhyError<M::Error>>;
     fn capabilities<M: MdioBus>(&self, mdio: &mut M)
         -> Result<PhyCapabilities, PhyError<M::Error>>;
 }
@@ -128,9 +138,10 @@ let mut phy = PhyLan87xx::new(1);
 
 phy.init(&mut mdio)?;
 loop {
-    if let Some(status) = phy.poll_link(&mut mdio)? {
-        // status.speed: Mbps10 / Mbps100
-        // status.duplex: Half / Full
+    let state = phy.poll_link(&mut mdio)?;
+    if state.up {
+        // state.speed:  Speed::_10M / Speed::_100M
+        // state.duplex: Duplex::Half / Duplex::Full
         break;
     }
 }
