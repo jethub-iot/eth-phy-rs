@@ -138,5 +138,6 @@ round.
 Reference: Microchip DS60001573C (silicon revision 2 = product
 revision B1).
 
+[Unreleased]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan867x-v0.2.0...HEAD
 [0.2.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-phy-lan867x-v0.1.0...eth-phy-lan867x-v0.2.0
 [0.1.0]: https://github.com/jethub-iot/eth-phy-rs/releases/tag/eth-phy-lan867x-v0.1.0

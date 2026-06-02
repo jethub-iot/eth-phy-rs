@@ -125,6 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared types: `Speed`, `Duplex`, `LinkStatus`, `PhyCapabilities`,
   `PhyError`.
 
+[Unreleased]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-mdio-phy-v0.3.0...HEAD
 [0.3.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-mdio-phy-v0.2.0...eth-mdio-phy-v0.3.0
 [0.2.0]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-mdio-phy-v0.1.1...eth-mdio-phy-v0.2.0
 [0.1.1]: https://github.com/jethub-iot/eth-phy-rs/compare/eth-mdio-phy-v0.1.0...eth-mdio-phy-v0.1.1
