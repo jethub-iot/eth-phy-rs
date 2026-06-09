@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 eth-mdio-phy = { version = "0.3.0", path = "../eth-mdio-phy" }
 embedded-hal = "1.0"
-defmt        = { version = "0.3", optional = true }
+defmt        = { version = "1.0", optional = true }
 
 [features]
 default = []

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *No pending changes.*
 
-## [0.2.0] - 2026-05-22
+## [0.2.0] - 2026-06-09
 
 ### ⚠ Hardware verification status
 
@@ -37,6 +37,14 @@ See the matching warning at the top of `README.md`.
   instead. Behaviour is preserved: pre-init and PLCA-on-PST-clear
   paths return `LinkState::down()`, the CSMA/CD and PST-set paths
   return `LinkState::up(Speed::_10M, Duplex::Half)`.
+- Bump optional `defmt` dependency from `^0.3` to `^1.0`. Tracks the
+  ecosystem migration (`esp-hal 1.1.x` and `embassy-net 0.9.x` are
+  already on `defmt 1.x`), so a downstream that enables the `defmt`
+  feature here alongside a current `esp-hal` / `embassy-net` release
+  no longer ends up with two `defmt` versions in its lock graph.
+  Use sites — `defmt::Format` derives and the new `defmt::warn!`
+  call sites described below — are source-compatible across the
+  `0.3` → `1.0` jump.
 
 ### Added
 

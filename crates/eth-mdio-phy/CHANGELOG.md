@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *No pending changes.*
 
-## [0.3.0] - 2026-05-22
+## [0.3.0] - 2026-06-09
 
 ### Breaking
 
@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LinkState { up: true, .. }` just to thread it through a force
   helper was awkward, so the helper now takes the two scalars
   directly.
+- Bump optional `defmt` dependency from `^0.3` to `^1.0`. Aligns the
+  trait crate with the rest of the embedded ecosystem (`esp-hal`
+  `1.1.x` and `embassy-net` `0.9.x` both already moved to
+  `defmt 1.x`), so a downstream that enables the `defmt` feature on
+  both `eth-mdio-phy` and any current `esp-hal` / `embassy-net`
+  release ends up with a single `defmt` version in its lock graph
+  rather than two. Use sites in this crate are only `defmt::Format`
+  derives, whose macro surface is source-compatible across the
+  `0.3` → `1.0` jump.
 
 ## [0.2.0] - 2026-05-06
 
