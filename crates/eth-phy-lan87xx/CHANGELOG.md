@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *No pending changes.*
 
-## [0.3.0] - 2026-05-22
+## [0.3.0] - 2026-06-09
 
 ### Breaking
 
@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Option<LinkStatus>`. The `None` case still signals an
   unrecognised PSCSR speed/duplex encoding; `poll_link` maps it to
   `LinkState::down()`.
+- Bump optional `defmt` dependency from `^0.3` to `^1.0`. Tracks the
+  ecosystem migration (`esp-hal 1.1.x` and `embassy-net 0.9.x` are
+  already on `defmt 1.x`), so a downstream that enables the `defmt`
+  feature here alongside a current `esp-hal` / `embassy-net` release
+  no longer ends up with two `defmt` versions in its lock graph.
+  Use sites — `defmt::Format` derives and the new `defmt::warn!`
+  call sites described below — are source-compatible across the
+  `0.3` → `1.0` jump.
 
 ### Added
 

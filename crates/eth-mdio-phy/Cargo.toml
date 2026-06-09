@@ -17,7 +17,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-defmt = { version = "0.3", optional = true }
+defmt = { version = "1.0", optional = true }
 
 [features]
 default = []
