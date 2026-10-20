@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-*No pending changes.*
+### Fixed
+
+- `PhyLan87xxWithReset::hardware_reset` docs cite LAN8720A datasheet
+  Table 5-8 (reset timing) instead of Table 4-2 (SMI register map), and
+  name the 25 ms wait a margin, not a datasheet requirement.
 
 ## [0.3.0] - 2026-06-09
 
