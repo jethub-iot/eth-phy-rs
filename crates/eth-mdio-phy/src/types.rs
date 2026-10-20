@@ -176,6 +176,8 @@ mod tests {
     }
 
     #[test]
+    // Calls Clone explicitly to cover the derived impl.
+    #[allow(clippy::clone_on_copy)]
     fn speed_clone_copy() {
         let s = Speed::_100M;
         let s2 = s;
@@ -185,6 +187,8 @@ mod tests {
     }
 
     #[test]
+    // Calls Clone explicitly to cover the derived impl.
+    #[allow(clippy::clone_on_copy)]
     fn duplex_clone_copy() {
         let d = Duplex::Full;
         let d2 = d;

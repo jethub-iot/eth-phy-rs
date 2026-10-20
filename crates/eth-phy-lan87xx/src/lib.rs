@@ -318,9 +318,11 @@ impl<P: embedded_hal::digital::OutputPin> PhyLan87xxWithReset<P> {
 
     /// Perform a hardware reset via the nRST pin.
     ///
-    /// Drives the pin low for 2 ms (min 100 us per datasheet), then
-    /// releases and waits 25 ms for PHY internal init to complete
-    /// before MDIO is accessible (LAN8720A datasheet Table 4-2).
+    /// Drives the pin low for 2 ms (nRST assertion time t_rstia is at
+    /// least 100 us, LAN8720A datasheet Table 5-8), then releases it and
+    /// waits 25 ms before MDIO access. Table 5-8 gives no MDIO-ready time
+    /// after nRST deassertion; the 25 ms wait is a margin equal to
+    /// t_purstd (supplies at 80% to nRST deassertion).
     pub fn hardware_reset<D: embedded_hal::delay::DelayNs>(
         &mut self,
         delay: &mut D,
